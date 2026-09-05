@@ -1,0 +1,444 @@
+package com.rcloneandroid.rclone_android
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class VpnInfo(
+    val iface: String?,
+    val packageName: String?,
+    val label: String?,
+) {
+    val keys: List<String> get() = listOfNotNull(packageName, label, iface)
+    val preferred: String get() = label ?: packageName ?: iface ?: "vpn"
+    val fingerprint: String get() = keys.joinToString("|").ifBlank { preferred }
+}
+
+@Suppress("DEPRECATION")
+class WifiMonitor private constructor(context: Context) {
+    private val app = context.applicationContext
+    private val cm = app.getSystemService(ConnectivityManager::class.java)
+    private var lastSsid: String? = null
+    private var lastVpns: Set<String> = emptySet()
+    private var wifiRegistered = false
+    private var vpnRegistered = false
+
+    private val wifiCallback: ConnectivityManager.NetworkCallback =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onAvailable(network: Network) = onWifiUp(network, null)
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    onWifiUp(network, caps)
+                }
+                override fun onLost(network: Network) = onWifiDown()
+            }
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) = onWifiUp(network, null)
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    onWifiUp(network, caps)
+                }
+                override fun onLost(network: Network) = onWifiDown()
+            }
+        }
+
+    private val vpnCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = onVpnChanged()
+        override fun onLost(network: Network) = onVpnChanged()
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            onVpnChanged()
+        }
+    }
+
+    fun start() {
+        if (!wifiRegistered) {
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            cm.registerNetworkCallback(request, wifiCallback)
+            wifiRegistered = true
+        }
+        if (!vpnRegistered) {
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+                .build()
+            cm.registerNetworkCallback(request, vpnCallback)
+            vpnRegistered = true
+        }
+        lastSsid = currentSsid()
+        lastVpns = currentVpns().map { it.fingerprint }.toSet()
+        val vpnText = currentVpns().joinToString("、") { it.preferred }.ifBlank { "无" }
+        EventHub.log(
+            "info",
+            "网络监听已启动，WiFi=${lastSsid ?: "无"} VPN=$vpnText ${diagnose()["wifiHint"]}",
+        )
+    }
+
+    fun stop() {
+        if (wifiRegistered) {
+            runCatching { cm.unregisterNetworkCallback(wifiCallback) }
+            wifiRegistered = false
+        }
+        if (vpnRegistered) {
+            runCatching { cm.unregisterNetworkCallback(vpnCallback) }
+            vpnRegistered = false
+        }
+    }
+
+    fun currentSsid(): String? {
+        val active = cm.activeNetwork
+        ssidFromNetwork(active, cm.getNetworkCapabilities(active))?.let { return it }
+        for (network in cm.allNetworks) {
+            ssidFromNetwork(network, cm.getNetworkCapabilities(network))?.let { return it }
+        }
+        return try {
+            val wm = app.getSystemService(WifiManager::class.java)
+            sanitize(wm.connectionInfo?.ssid)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun currentVpns(): List<VpnInfo> {
+        val out = mutableListOf<VpnInfo>()
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            val iface = cm.getLinkProperties(network)?.interfaceName
+            var pkg: String? = null
+            var label: String? = null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val uid = caps.ownerUid
+                if (uid > 0) {
+                    pkg = runCatching { app.packageManager.getPackagesForUid(uid)?.firstOrNull() }.getOrNull()
+                    if (pkg != null) {
+                        label = runCatching {
+                            val info = app.packageManager.getApplicationInfo(pkg, 0)
+                            app.packageManager.getApplicationLabel(info).toString()
+                        }.getOrNull()
+                    }
+                }
+            }
+            out += VpnInfo(iface, pkg, label)
+        }
+        return out.distinctBy { it.fingerprint }
+    }
+
+    fun isWifiAssociated(): Boolean {
+        if (currentSsid() != null) return true
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return true
+        }
+        return try {
+            val info = app.getSystemService(WifiManager::class.java).connectionInfo
+            info != null && info.networkId != -1
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun currentVpnSummary(): String? {
+        val vpns = currentVpns()
+        if (vpns.isEmpty()) return null
+        return vpns.joinToString("、") { it.preferred }
+    }
+
+    fun diagnose(): Map<String, Any?> {
+        val locationGranted = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+        val nearbyGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            hasPermission(Manifest.permission.NEARBY_WIFI_DEVICES)
+        } else {
+            true
+        }
+        val locationEnabled = isLocationEnabled()
+        val ssid = currentSsid()
+        val hint = when {
+            ssid != null -> "已识别 $ssid"
+            !locationEnabled -> "系统定位开关未打开，Android 读不到 WiFi 名称"
+            !locationGranted -> "未授予定位权限"
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !nearbyGranted -> "未授予附近的设备权限"
+            else -> "已连 WiFi 但系统未返回名称，请确认授予精确位置"
+        }
+        return mapOf(
+            "currentSsid" to ssid,
+            "currentVpn" to currentVpnSummary(),
+            "locationGranted" to locationGranted,
+            "locationEnabled" to locationEnabled,
+            "nearbyWifiGranted" to nearbyGranted,
+            "wifiHint" to hint,
+        )
+    }
+
+    private fun onWifiUp(network: Network, caps: NetworkCapabilities?) {
+        val ssid = ssidFromNetwork(network, caps ?: cm.getNetworkCapabilities(network)) ?: currentSsid()
+        if (ssid.isNullOrBlank() || ssid == lastSsid) return
+        val previous = lastSsid
+        lastSsid = ssid
+        EventHub.log("info", "WiFi 已连接: $ssid")
+        EventHub.emit(mapOf("type" to "wifi", "event" to "connect", "ssid" to ssid, "previous" to previous))
+        WifiRuleEngine.requestReconcile(app, "WiFi 已连接")
+    }
+
+    private fun onWifiDown() {
+        val previous = lastSsid ?: return
+        val still = currentSsid()
+        if (!still.isNullOrBlank()) return
+        lastSsid = null
+        EventHub.log("info", "WiFi 已断开: $previous")
+        EventHub.emit(mapOf("type" to "wifi", "event" to "disconnect", "ssid" to previous))
+        WifiRuleEngine.requestReconcile(app, "WiFi 已断开")
+    }
+
+    private fun onVpnChanged() {
+        val now = currentVpns()
+        val nowKeys = now.map { it.fingerprint }.toSet()
+        if (nowKeys == lastVpns) return
+        val added = now.filter { it.fingerprint !in lastVpns }
+        val removed = lastVpns - nowKeys
+        lastVpns = nowKeys
+        for (vpn in added) {
+            EventHub.log("info", "VPN 已连接: ${vpn.preferred}")
+            EventHub.emit(
+                mapOf(
+                    "type" to "vpn",
+                    "event" to "connect",
+                    "vpn" to vpn.preferred,
+                    "package" to vpn.packageName,
+                    "iface" to vpn.iface,
+                ),
+            )
+            WifiRuleEngine.requestReconcile(app, "VPN 已连接")
+        }
+        for (key in removed) {
+            EventHub.log("info", "VPN 已断开: $key")
+            EventHub.emit(mapOf("type" to "vpn", "event" to "disconnect", "vpn" to key))
+            WifiRuleEngine.requestReconcile(app, "VPN 已断开")
+        }
+    }
+
+    private fun ssidFromNetwork(network: Network?, caps: NetworkCapabilities?): String? {
+        if (network == null) return null
+        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val info = caps.transportInfo
+            if (info is WifiInfo) {
+                return sanitize(info.ssid)
+            }
+        }
+        return null
+    }
+
+    private fun hasPermission(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(app, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val lm = app.getSystemService(LocationManager::class.java) ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lm.isLocationEnabled
+        } else {
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    }
+
+    private fun sanitize(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val ssid = raw.trim().trim('"')
+        if (ssid.isEmpty() || ssid == "<unknown ssid>" || ssid == "0x") return null
+        return ssid
+    }
+
+    companion object {
+        @Volatile
+        private var instance: WifiMonitor? = null
+
+        fun get(context: Context): WifiMonitor {
+            return instance ?: synchronized(this) {
+                instance ?: WifiMonitor(context.applicationContext).also { instance = it }
+            }
+        }
+    }
+}
+
+object WifiRuleEngine {
+    @Volatile
+    private var generation = 0
+
+    fun requestReconcile(context: Context, reason: String) {
+        val mine = synchronized(this) { ++generation }
+        Thread {
+            try {
+                Thread.sleep(350)
+                if (mine != generation) return@Thread
+                reconcile(context, reason)
+            } catch (e: Exception) {
+                EventHub.log("error", "核对规则失败: ${e.message}")
+            }
+        }.start()
+    }
+
+    fun evaluateCurrent(context: Context) = reconcile(context, "核对当前网络")
+
+    fun reconcile(context: Context, reason: String) {
+        val paths = AppPaths(RcloneApp.instance)
+        val settings = readObject(paths.settingsFile)
+        if (!settings.optBoolean("wifiMonitorEnabled", true)) return
+        if (!paths.wifiRulesFile.exists() || !paths.mountsFile.exists()) return
+        val monitor = WifiMonitor.get(context)
+        RootMountManager.syncFromSystem()
+        val ssid = monitor.currentSsid()
+        val wifiUp = monitor.isWifiAssociated()
+        val vpns = monitor.currentVpns()
+        val vpnText = vpns.joinToString("、") { it.preferred }.ifBlank { "无" }
+        EventHub.log(
+            "info",
+            "$reason：当前 WiFi=${ssid ?: if (wifiUp) "已连接但未读到名称" else "无"} VPN=$vpnText",
+        )
+
+        val rules = try {
+            JSONArray(paths.wifiRulesFile.readText().ifBlank { "[]" })
+        } catch (_: Exception) {
+            return
+        }
+        val mounts = try {
+            JSONArray(paths.mountsFile.readText().ifBlank { "[]" })
+        } catch (_: Exception) {
+            return
+        }
+        val mountById = HashMap<String, JSONObject>()
+        for (i in 0 until mounts.length()) {
+            val item = mounts.getJSONObject(i)
+            mountById[item.optString("id")] = item
+        }
+
+        val toMount = linkedSetOf<String>()
+        val toUnmount = linkedSetOf<String>()
+        for (i in 0 until rules.length()) {
+            val rule = rules.getJSONObject(i)
+            if (!rule.optBoolean("enabled", true)) continue
+            val kind = rule.optString("kind", "wifi").ifBlank { "wifi" }
+            val trigger = rule.optString("trigger")
+            val action = rule.optString("action")
+            val matched = currentlyMatches(kind, rule.optString("ssid"), ssid, vpns)
+            val knownAbsent = when {
+                kind.equals("wifi", true) -> !wifiUp || !ssid.isNullOrBlank()
+                else -> true
+            }
+            val ids = idsOf(rule)
+            if (ids.isEmpty()) continue
+
+            if (trigger.equals("connect", true) && action != "unmount") {
+                if (matched) {
+                    EventHub.log("info", "规则生效 ${labelOf(kind)} ${rule.optString("ssid")} 已连接 → 挂载")
+                    toMount += ids
+                } else if (knownAbsent) {
+                    EventHub.log("info", "规则核对 ${labelOf(kind)} ${rule.optString("ssid")} 当前未连接 → 卸载")
+                    toUnmount += ids
+                }
+                continue
+            }
+
+            val active = when {
+                trigger.equals("connect", true) -> matched
+                trigger.equals("disconnect", true) -> !matched && knownAbsent
+                else -> false
+            }
+            if (!active) continue
+            EventHub.log(
+                "info",
+                "规则生效 ${labelOf(kind)} ${rule.optString("ssid")} $trigger/$action",
+            )
+            if (action == "unmount") {
+                toUnmount += ids
+            } else {
+                toMount += ids
+            }
+        }
+
+        for (id in toMount) {
+            if (RootMountManager.isMounted(id)) continue
+            val profile = mountById[id] ?: continue
+            try {
+                if (settings.optBoolean("preferRealMount", true) && RootShell.isAvailable()) {
+                    profile.put("enabled", true)
+                    RootMountManager.mount(profile)
+                } else {
+                    RcloneDaemon.start(RcloneApp.instance)
+                    EventHub.log("info", "无 Root，已按规则拉起 rclone 服务")
+                }
+            } catch (e: Exception) {
+                EventHub.log("error", "按规则挂载失败: ${e.message}")
+            }
+        }
+        for (id in toUnmount) {
+            if (id in toMount) continue
+            if (!RootMountManager.isMounted(id)) continue
+            try {
+                RootMountManager.unmount(id)
+            } catch (e: Exception) {
+                EventHub.log("error", "按规则卸载失败: ${e.message}")
+            }
+        }
+        RcloneService.refreshNotification()
+    }
+
+    @Deprecated("use reconcile")
+    fun apply(kind: String, trigger: String, target: String, vpn: VpnInfo? = null) {
+        requestReconcile(RcloneApp.instance, "网络变化")
+    }
+
+    private fun currentlyMatches(
+        kind: String,
+        ruleTarget: String,
+        ssid: String?,
+        vpns: List<VpnInfo>,
+    ): Boolean {
+        if (kind.equals("wifi", ignoreCase = true)) {
+            return !ssid.isNullOrBlank() && ruleTarget.trim().equals(ssid, ignoreCase = true)
+        }
+        val expected = ruleTarget.trim()
+        if (vpns.isEmpty()) return false
+        if (expected.isEmpty() || expected == "*" || expected.equals("any", true) || expected.equals("vpn", true)) {
+            return true
+        }
+        val needle = expected.lowercase()
+        return vpns.any { vpn ->
+            vpn.keys.any { it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase()) }
+        }
+    }
+
+    private fun idsOf(rule: JSONObject): List<String> {
+        val ids = rule.optJSONArray("profileIds") ?: return emptyList()
+        return buildList {
+            for (j in 0 until ids.length()) {
+                val id = ids.optString(j)
+                if (id.isNotBlank()) add(id)
+            }
+        }
+    }
+
+    private fun labelOf(kind: String): String = if (kind.equals("vpn", true)) "VPN" else "WiFi"
+
+    private fun readObject(file: java.io.File): JSONObject {
+        if (!file.exists()) return JSONObject()
+        return try {
+            JSONObject(file.readText().ifBlank { "{}" })
+        } catch (_: Exception) {
+            JSONObject()
+        }
+    }
+}

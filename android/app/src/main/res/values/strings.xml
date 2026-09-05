@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">rclone 挂载</string>
+    <string name="service_channel_name">rclone 挂载服务</string>
+    <string name="service_channel_desc">保持 rclone 守护进程与挂载存活</string>
+</resources>
