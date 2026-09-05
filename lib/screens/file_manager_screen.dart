@@ -14,10 +14,10 @@ class FileManagerScreen extends ConsumerStatefulWidget {
   const FileManagerScreen({super.key});
 
   @override
-  ConsumerState<FileManagerScreen> createState() => _FileManagerScreenState();
+  ConsumerState<FileManagerScreen> createState() => FileManagerScreenState();
 }
 
-class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
+class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
   String? _remote;
   String _path = '';
   List<RemoteEntry> _entries = [];
@@ -67,6 +67,12 @@ class _FileManagerScreenState extends ConsumerState<FileManagerScreen> {
       _path = _path.isEmpty ? entry.name : '$_path/${entry.name}';
     });
     _reload();
+  }
+
+  bool handleBack() {
+    if (_remote == null && _path.isEmpty) return false;
+    _up();
+    return true;
   }
 
   void _up() {

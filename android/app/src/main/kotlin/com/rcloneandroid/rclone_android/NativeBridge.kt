@@ -87,6 +87,10 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 true
             }
             "openAppSettings" -> onMain { SettingsIntents.appDetails(activity) }
+            "moveTaskToBack" -> onMain {
+                activity.moveTaskToBack(true)
+                true
+            }
             "readFile" -> {
                 val name = call.argument<String>("name") ?: throw IllegalArgumentException("缺少 name")
                 val file = File(paths.filesDir, name)

@@ -100,7 +100,13 @@ class _BootstrapPageState extends ConsumerState<BootstrapPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await ref.read(nativeBridgeProvider).moveTaskToBack();
+      },
+      child: Scaffold(
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
@@ -121,6 +127,7 @@ class _BootstrapPageState extends ConsumerState<BootstrapPage> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

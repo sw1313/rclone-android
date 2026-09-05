@@ -114,7 +114,12 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(nativeStatusProvider);
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _enterApp();
+      },
+      child: Scaffold(
       appBar: AppBar(title: const Text('权限设置')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
@@ -174,6 +179,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
             child: Text(status.needsPermissionSetup ? '稍后进入应用' : '进入应用'),
           ),
         ],
+      ),
       ),
     );
   }

@@ -89,6 +89,10 @@ class NativeBridge {
     return _launchMessage(await _channel.invokeMethod('openAppSettings'));
   }
 
+  Future<void> moveTaskToBack() async {
+    await _channel.invokeMethod('moveTaskToBack');
+  }
+
   String _launchMessage(dynamic raw) {
     if (raw is Map) {
       return (raw['message'] ?? '已打开系统页').toString();

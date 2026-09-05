@@ -16,6 +16,7 @@ class AppShell extends ConsumerStatefulWidget {
 
 class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver {
   int _index = 0;
+  final _filesKey = GlobalKey<FileManagerScreenState>();
 
   @override
   void initState() {
@@ -38,23 +39,37 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    const pages = [
-      HomeScreen(),
-      RemotesScreen(),
-      FileManagerScreen(),
-      SettingsScreen(),
+    final pages = [
+      const HomeScreen(),
+      const RemotesScreen(),
+      FileManagerScreen(key: _filesKey),
+      const SettingsScreen(),
     ];
-    return Scaffold(
-      body: IndexedStack(index: _index, children: pages),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (value) => setState(() => _index = value),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.storage_outlined), selectedIcon: Icon(Icons.storage), label: '挂载'),
-          NavigationDestination(icon: Icon(Icons.cloud_outlined), selectedIcon: Icon(Icons.cloud), label: '远程'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: '文件'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: '设置'),
-        ],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        if (_index == 2 && _filesKey.currentState?.handleBack() == true) {
+          return;
+        }
+        if (_index != 0) {
+          setState(() => _index = 0);
+          return;
+        }
+        await ref.read(nativeBridgeProvider).moveTaskToBack();
+      },
+      child: Scaffold(
+        body: IndexedStack(index: _index, children: pages),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _index,
+          onDestinationSelected: (value) => setState(() => _index = value),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.storage_outlined), selectedIcon: Icon(Icons.storage), label: '挂载'),
+            NavigationDestination(icon: Icon(Icons.cloud_outlined), selectedIcon: Icon(Icons.cloud), label: '远程'),
+            NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: '文件'),
+            NavigationDestination(icon: Icon(Icons.settings_outlined), selectedIcon: Icon(Icons.settings), label: '设置'),
+          ],
+        ),
       ),
     );
   }

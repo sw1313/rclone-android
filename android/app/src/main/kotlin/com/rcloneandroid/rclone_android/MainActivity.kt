@@ -11,4 +11,9 @@ class MainActivity : FlutterActivity() {
         bridge = NativeBridge(this)
         bridge.attach(flutterEngine)
     }
+
+    // 根页面返回时不要 finish 整个 Activity，只退到后台，避免小米上“返回即退出”。
+    override fun finish() {
+        moveTaskToBack(true)
+    }
 }
