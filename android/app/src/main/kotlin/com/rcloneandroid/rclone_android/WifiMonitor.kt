@@ -189,7 +189,7 @@ class WifiMonitor private constructor(context: Context) {
         lastSsid = ssid
         EventHub.log("info", "WiFi 已连接: $ssid")
         EventHub.emit(mapOf("type" to "wifi", "event" to "connect", "ssid" to ssid, "previous" to previous))
-        WifiRuleEngine.requestReconcile(app, "WiFi 已连接")
+        WifiRuleEngine.requestReconcile(app, "WiFi 已连接", NetEvent("wifi", "connect", ssid))
     }
 
     private fun onWifiDown() {
@@ -199,7 +199,7 @@ class WifiMonitor private constructor(context: Context) {
         lastSsid = null
         EventHub.log("info", "WiFi 已断开: $previous")
         EventHub.emit(mapOf("type" to "wifi", "event" to "disconnect", "ssid" to previous))
-        WifiRuleEngine.requestReconcile(app, "WiFi 已断开")
+        WifiRuleEngine.requestReconcile(app, "WiFi 已断开", NetEvent("wifi", "disconnect", previous))
     }
 
     private fun onVpnChanged() {
@@ -220,12 +220,12 @@ class WifiMonitor private constructor(context: Context) {
                     "iface" to vpn.iface,
                 ),
             )
-            WifiRuleEngine.requestReconcile(app, "VPN 已连接")
+            WifiRuleEngine.requestReconcile(app, "VPN 已连接", NetEvent("vpn", "connect", vpn.preferred, vpn.keys))
         }
         for (key in removed) {
             EventHub.log("info", "VPN 已断开: $key")
             EventHub.emit(mapOf("type" to "vpn", "event" to "disconnect", "vpn" to key))
-            WifiRuleEngine.requestReconcile(app, "VPN 已断开")
+            WifiRuleEngine.requestReconcile(app, "VPN 已断开", NetEvent("vpn", "disconnect", key, listOf(key)))
         }
     }
 
@@ -274,26 +274,44 @@ class WifiMonitor private constructor(context: Context) {
     }
 }
 
+data class NetEvent(
+    val kind: String,
+    val change: String,
+    val target: String,
+    val keys: List<String> = listOf(target),
+)
+
 object WifiRuleEngine {
     @Volatile
     private var generation = 0
 
-    fun requestReconcile(context: Context, reason: String) {
+    fun requestReconcile(context: Context, reason: String, event: NetEvent? = null) {
+        if (event != null) {
+            Thread {
+                try {
+                    Thread.sleep(200)
+                    reconcile(context, reason, event)
+                } catch (e: Exception) {
+                    EventHub.log("error", "核对规则失败: ${e.message}")
+                }
+            }.start()
+            return
+        }
         val mine = synchronized(this) { ++generation }
         Thread {
             try {
                 Thread.sleep(350)
                 if (mine != generation) return@Thread
-                reconcile(context, reason)
+                reconcile(context, reason, null)
             } catch (e: Exception) {
                 EventHub.log("error", "核对规则失败: ${e.message}")
             }
         }.start()
     }
 
-    fun evaluateCurrent(context: Context) = reconcile(context, "核对当前网络")
+    fun evaluateCurrent(context: Context) = reconcile(context, "核对当前网络", null)
 
-    fun reconcile(context: Context, reason: String) {
+    fun reconcile(context: Context, reason: String, event: NetEvent? = null) {
         val paths = AppPaths(RcloneApp.instance)
         val settings = readObject(paths.settingsFile)
         if (!settings.optBoolean("wifiMonitorEnabled", true)) return
@@ -330,42 +348,23 @@ object WifiRuleEngine {
         for (i in 0 until rules.length()) {
             val rule = rules.getJSONObject(i)
             if (!rule.optBoolean("enabled", true)) continue
-            val kind = rule.optString("kind", "wifi").ifBlank { "wifi" }
-            val trigger = rule.optString("trigger")
-            val action = rule.optString("action")
-            val matched = currentlyMatches(kind, rule.optString("ssid"), ssid, vpns)
-            val knownAbsent = when {
-                kind.equals("wifi", true) -> !wifiUp || !ssid.isNullOrBlank()
-                else -> true
-            }
             val ids = idsOf(rule)
             if (ids.isEmpty()) continue
-
-            if (trigger.equals("connect", true) && action != "unmount") {
-                if (matched) {
-                    EventHub.log("info", "规则生效 ${labelOf(kind)} ${rule.optString("ssid")} 已连接 → 挂载")
-                    toMount += ids
-                } else if (knownAbsent) {
-                    EventHub.log("info", "规则核对 ${labelOf(kind)} ${rule.optString("ssid")} 当前未连接 → 卸载")
+            val action = rule.optString("action")
+            val kind = rule.optString("kind", "wifi").ifBlank { "wifi" }
+            val verdict = evaluateRule(rule, ssid, wifiUp, vpns, event)
+            if (verdict.active) {
+                EventHub.log("info", "规则生效 ${verdict.label} → ${if (action == "unmount") "卸载" else "挂载"}")
+                if (action == "unmount") {
                     toUnmount += ids
+                } else {
+                    toMount += ids
                 }
                 continue
             }
-
-            val active = when {
-                trigger.equals("connect", true) -> matched
-                trigger.equals("disconnect", true) -> !matched && knownAbsent
-                else -> false
-            }
-            if (!active) continue
-            EventHub.log(
-                "info",
-                "规则生效 ${labelOf(kind)} ${rule.optString("ssid")} $trigger/$action",
-            )
-            if (action == "unmount") {
+            if (!kind.equals("both", true) && action != "unmount" && verdict.known) {
+                EventHub.log("info", "规则未满足 ${verdict.label} → 卸载")
                 toUnmount += ids
-            } else {
-                toMount += ids
             }
         }
 
@@ -401,6 +400,87 @@ object WifiRuleEngine {
         requestReconcile(RcloneApp.instance, "网络变化")
     }
 
+    private data class RuleVerdict(val active: Boolean, val known: Boolean, val label: String)
+
+    private data class ClauseVerdict(val active: Boolean, val known: Boolean, val label: String)
+
+    private fun evaluateRule(
+        rule: JSONObject,
+        ssid: String?,
+        wifiUp: Boolean,
+        vpns: List<VpnInfo>,
+        event: NetEvent?,
+    ): RuleVerdict {
+        val kind = rule.optString("kind", "wifi").ifBlank { "wifi" }
+        val wifi = evalWifi(
+            rule.optString("trigger", "connect"),
+            rule.optString("ssid"),
+            ssid,
+            wifiUp,
+        )
+        val vpnTarget = rule.optString("vpnName").ifBlank {
+            if (kind.equals("vpn", true)) rule.optString("ssid") else ""
+        }
+        val vpnTrigger = rule.optString("vpnTrigger").ifBlank {
+            if (kind.equals("vpn", true)) rule.optString("trigger", "connect") else "connect"
+        }
+        val vpn = evalVpn(vpnTrigger, vpnTarget, vpns)
+        if (!kind.equals("both", true)) {
+            return if (kind.equals("vpn", true)) {
+                RuleVerdict(vpn.active, vpn.known, vpn.label)
+            } else {
+                RuleVerdict(wifi.active, wifi.known, wifi.label)
+            }
+        }
+        val triggerSource = rule.optString("triggerSource", "vpn").ifBlank { "vpn" }
+        val guard = if (triggerSource.equals("vpn", true)) wifi else vpn
+        val edge = if (triggerSource.equals("vpn", true)) vpn else wifi
+        val edgeTarget = if (triggerSource.equals("vpn", true)) vpnTarget else rule.optString("ssid")
+        val edgeChange = if (triggerSource.equals("vpn", true)) vpnTrigger else rule.optString("trigger", "connect")
+        val label = "${guard.label} 时${if (edgeChange.equals("disconnect", true)) "关闭" else "开启"}${if (triggerSource.equals("vpn", true)) "VPN" else "WiFi"}"
+        if (event == null) {
+            return RuleVerdict(false, false, label)
+        }
+        val fired = guard.active && guard.known &&
+            event.kind.equals(triggerSource, true) &&
+            event.change.equals(edgeChange, true) &&
+            eventMatches(triggerSource, edgeTarget, event) &&
+            edge.active
+        return RuleVerdict(fired, true, label)
+    }
+
+    private fun eventMatches(kind: String, target: String, event: NetEvent): Boolean {
+        val expected = target.trim()
+        if (expected.isEmpty() || expected == "*" || expected.equals("any", true) || expected.equals("vpn", true)) {
+            return true
+        }
+        if (kind.equals("wifi", true)) {
+            return expected.equals(event.target, ignoreCase = true)
+        }
+        val needle = expected.lowercase()
+        return (event.keys + event.target).any {
+            it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase())
+        }
+    }
+
+    private fun evalWifi(trigger: String, target: String, ssid: String?, wifiUp: Boolean): ClauseVerdict {
+        val any = target.isBlank() || target == "*" || target.equals("any", true)
+        val matched = if (any) wifiUp else currentlyMatches("wifi", target, ssid, emptyList())
+        val known = if (any) true else !wifiUp || !ssid.isNullOrBlank()
+        val active = if (trigger.equals("disconnect", true)) !matched && known else matched
+        val name = if (any) "任意 WiFi" else target
+        val whenText = if (trigger.equals("disconnect", true)) "未连接" else "已连接"
+        return ClauseVerdict(active, known, "WiFi $name $whenText")
+    }
+
+    private fun evalVpn(trigger: String, target: String, vpns: List<VpnInfo>): ClauseVerdict {
+        val matched = currentlyMatches("vpn", target.ifBlank { "*" }, null, vpns)
+        val active = if (trigger.equals("disconnect", true)) !matched else matched
+        val name = if (target.isBlank() || target == "*") "任意 VPN" else target
+        val whenText = if (trigger.equals("disconnect", true)) "未连接" else "已连接"
+        return ClauseVerdict(active, true, "VPN $name $whenText")
+    }
+
     private fun currentlyMatches(
         kind: String,
         ruleTarget: String,
@@ -430,8 +510,6 @@ object WifiRuleEngine {
             }
         }
     }
-
-    private fun labelOf(kind: String): String = if (kind.equals("vpn", true)) "VPN" else "WiFi"
 
     private fun readObject(file: java.io.File): JSONObject {
         if (!file.exists()) return JSONObject()

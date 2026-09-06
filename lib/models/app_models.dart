@@ -196,26 +196,45 @@ class WifiRule {
     this.kind = 'wifi',
     required this.ssid,
     required this.trigger,
+    this.vpnName = '',
+    this.vpnTrigger = 'connect',
+    this.triggerSource = 'vpn',
     required this.action,
     required this.profileIds,
     this.enabled = true,
   });
 
   final String id;
+  /// wifi | vpn | both（both 为「前提状态 + 触发器」）
   final String kind;
   final String ssid;
   final String trigger;
+  final String vpnName;
+  final String vpnTrigger;
+  /// both 时哪一侧是触发器：wifi | vpn
+  final String triggerSource;
   final String action;
   final List<String> profileIds;
   final bool enabled;
 
   bool get isVpn => kind == 'vpn';
+  bool get isBoth => kind == 'both';
+  bool get usesWifi => kind == 'wifi' || kind == 'both';
+  bool get usesVpn => kind == 'vpn' || kind == 'both';
+  bool get triggerIsVpn => !isBoth || triggerSource == 'vpn';
+
+  String get wifiTrigger => usesWifi ? trigger : 'connect';
+  String get resolvedVpnName => kind == 'vpn' && vpnName.isEmpty ? ssid : vpnName;
+  String get resolvedVpnTrigger => kind == 'vpn' && vpnName.isEmpty ? trigger : vpnTrigger;
 
   WifiRule copyWith({
     String? id,
     String? kind,
     String? ssid,
     String? trigger,
+    String? vpnName,
+    String? vpnTrigger,
+    String? triggerSource,
     String? action,
     List<String>? profileIds,
     bool? enabled,
@@ -225,6 +244,9 @@ class WifiRule {
       kind: kind ?? this.kind,
       ssid: ssid ?? this.ssid,
       trigger: trigger ?? this.trigger,
+      vpnName: vpnName ?? this.vpnName,
+      vpnTrigger: vpnTrigger ?? this.vpnTrigger,
+      triggerSource: triggerSource ?? this.triggerSource,
       action: action ?? this.action,
       profileIds: profileIds ?? this.profileIds,
       enabled: enabled ?? this.enabled,
@@ -236,17 +258,26 @@ class WifiRule {
         'kind': kind,
         'ssid': ssid,
         'trigger': trigger,
+        'vpnName': vpnName,
+        'vpnTrigger': vpnTrigger,
+        'triggerSource': triggerSource,
         'action': action,
         'profileIds': profileIds,
         'enabled': enabled,
       };
 
   factory WifiRule.fromJson(Map<String, dynamic> json) {
+    final kind = json['kind'] as String? ?? 'wifi';
+    final ssid = json['ssid'] as String? ?? '';
+    final trigger = json['trigger'] as String? ?? 'connect';
     return WifiRule(
       id: json['id'] as String,
-      kind: json['kind'] as String? ?? 'wifi',
-      ssid: json['ssid'] as String? ?? '',
-      trigger: json['trigger'] as String? ?? 'connect',
+      kind: kind,
+      ssid: ssid,
+      trigger: trigger,
+      vpnName: json['vpnName'] as String? ?? (kind == 'vpn' ? ssid : ''),
+      vpnTrigger: json['vpnTrigger'] as String? ?? (kind == 'vpn' ? trigger : 'connect'),
+      triggerSource: json['triggerSource'] as String? ?? 'vpn',
       action: json['action'] as String? ?? 'mount',
       profileIds: ((json['profileIds'] as List?) ?? const [])
           .map((e) => e.toString())
@@ -371,6 +402,7 @@ class NativeStatus {
     this.serviceRunning = false,
     this.hasAllFiles = false,
     this.batteryIgnored = false,
+    this.bootHookInstalled = false,
   });
 
   final bool rootAvailable;
@@ -395,6 +427,7 @@ class NativeStatus {
   final bool serviceRunning;
   final bool hasAllFiles;
   final bool batteryIgnored;
+  final bool bootHookInstalled;
 
   bool get canRealMount => rootAvailable && fusermountReady && rcloneReady;
 
@@ -423,6 +456,7 @@ class NativeStatus {
     bool? serviceRunning,
     bool? hasAllFiles,
     bool? batteryIgnored,
+    bool? bootHookInstalled,
   }) {
     return NativeStatus(
       rootAvailable: rootAvailable ?? this.rootAvailable,
@@ -447,6 +481,7 @@ class NativeStatus {
       serviceRunning: serviceRunning ?? this.serviceRunning,
       hasAllFiles: hasAllFiles ?? this.hasAllFiles,
       batteryIgnored: batteryIgnored ?? this.batteryIgnored,
+      bootHookInstalled: bootHookInstalled ?? this.bootHookInstalled,
     );
   }
 
@@ -476,6 +511,7 @@ class NativeStatus {
       serviceRunning: map['serviceRunning'] == true,
       hasAllFiles: map['hasAllFiles'] == true,
       batteryIgnored: map['batteryIgnored'] == true,
+      bootHookInstalled: map['bootHookInstalled'] == true,
     );
   }
 }

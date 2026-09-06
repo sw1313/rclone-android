@@ -20,21 +20,11 @@ class RcloneService : Service() {
         super.onCreate()
         instance = this
         createChannel()
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        enterForeground()
         Thread {
             try {
                 BinaryInstaller.install(this)
+                BootHook.sync(this)
                 RcloneDaemon.start(this)
                 RootMountManager.hydrate()
                 refreshNotification()
@@ -101,14 +91,32 @@ class RcloneService : Service() {
         fun isRunning(): Boolean = instance != null
 
         fun start(context: Context) {
-            val intent = Intent(context, RcloneService::class.java)
-            context.startForegroundService(intent)
+            BootStarter.startServiceNow(context, "应用内启动")
         }
 
         fun refreshNotification() {
             val service = instance ?: return
             val nm = service.getSystemService(NotificationManager::class.java)
             nm.notify(NOTIFICATION_ID, service.buildNotification())
+        }
+    }
+
+    private fun enterForeground() {
+        val notification = buildNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // 只用 specialUse。location 在 Android 16 后台/授权后会 SecurityException 闪退。
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (t: Throwable) {
+            EventHub.log("error", "进入前台失败: ${t.message}")
         }
     }
 

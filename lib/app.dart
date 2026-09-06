@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import 'models/app_models.dart';
 import 'providers/app_providers.dart';
 import 'screens/app_shell.dart';
 import 'screens/permission_setup_page.dart';
+import 'services/runtime_permissions.dart';
 
 class RcloneApp extends StatelessWidget {
   const RcloneApp({super.key});
@@ -72,9 +72,7 @@ class _BootstrapPageState extends ConsumerState<BootstrapPage> {
       await native.prepareBinaries();
       setState(() => _step = '启动前台服务…');
       await native.startService();
-      await Permission.notification.request();
-      await Permission.locationWhenInUse.request();
-      await Permission.nearbyWifiDevices.request();
+      await RuntimePermissions.requestMissing();
       setState(() => _step = '启动 rclone 服务…');
       await native.startRcd();
       await native.startWifiMonitor();

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../providers/app_providers.dart';
+import '../services/runtime_permissions.dart';
 import 'app_shell.dart';
 
 class PermissionSetupPage extends ConsumerStatefulWidget {
@@ -15,12 +15,27 @@ class PermissionSetupPage extends ConsumerStatefulWidget {
 class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
     with WidgetsBindingObserver {
   bool _prompted = false;
+  bool _notificationOk = false;
+  bool _locationOk = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _promptMissing());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _refreshRuntime();
+      await _promptMissing();
+    });
+  }
+
+  Future<void> _refreshRuntime() async {
+    final notificationOk = await RuntimePermissions.notificationOk();
+    final locationOk = await RuntimePermissions.locationOk();
+    if (!mounted) return;
+    setState(() {
+      _notificationOk = notificationOk;
+      _locationOk = locationOk;
+    });
   }
 
   @override
@@ -33,6 +48,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       ref.read(nativeStatusProvider.notifier).refresh();
+      _refreshRuntime();
     }
   }
 
@@ -65,6 +81,19 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
       );
       if (go == true && mounted) {
         await _run(native.requestIgnoreBattery);
+      }
+    }
+
+    await ref.read(nativeStatusProvider.notifier).refresh();
+    if (!mounted) return;
+    if (!ref.read(nativeStatusProvider).bootHookInstalled) {
+      final go = await _confirm(
+        title: '需要允许自启动',
+        body: '小米/HyperOS 默认拦截开机广播。请在安全中心允许本应用自启动。有 Root 时会安装 Magisk 模块「rclone 挂载开机自启」，开机只后台拉服务，可在 Magisk 里删除。',
+        action: '去允许',
+      );
+      if (go == true && mounted) {
+        await _run(native.openAutostartSettings);
       }
     }
   }
@@ -147,31 +176,35 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
             granted: status.batteryIgnored,
             onTap: () => _run(ref.read(nativeBridgeProvider).requestIgnoreBattery),
           ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.notifications_outlined),
-            title: const Text('通知'),
-            subtitle: const Text('前台服务保活需要通知权限'),
-            trailing: TextButton(
-              onPressed: () async {
-                await Permission.notification.request();
-              },
-              child: const Text('申请'),
-            ),
+          _PermissionCard(
+            icon: Icons.restart_alt,
+            title: '允许自启动',
+            subtitle: status.bootHookInstalled
+                ? 'Magisk 开机模块已安装，可在 Magisk 里删除'
+                : '小米不打开自启动，开机广播到不了，服务起不来',
+            granted: status.bootHookInstalled,
+            onTap: () => _run(ref.read(nativeBridgeProvider).openAutostartSettings),
           ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.location_on_outlined),
-            title: const Text('定位 / 附近的设备'),
-            subtitle: const Text('用来读取当前 WiFi 名称，做自动挂载'),
-            trailing: TextButton(
-              onPressed: () async {
-                await Permission.locationWhenInUse.request();
-                await Permission.nearbyWifiDevices.request();
-                await ref.read(nativeStatusProvider.notifier).refresh();
-              },
-              child: const Text('申请'),
-            ),
+          _PermissionCard(
+            icon: Icons.notifications_outlined,
+            title: '通知',
+            subtitle: _notificationOk ? '已授予' : '前台服务保活需要通知权限',
+            granted: _notificationOk,
+            onTap: () async {
+              await RuntimePermissions.requestMissing();
+              await _refreshRuntime();
+            },
+          ),
+          _PermissionCard(
+            icon: Icons.location_on_outlined,
+            title: '定位 / 附近的设备',
+            subtitle: _locationOk ? '已授予' : '用来读取当前 WiFi 名称，做自动挂载',
+            granted: _locationOk,
+            onTap: () async {
+              await RuntimePermissions.requestMissing();
+              await ref.read(nativeStatusProvider.notifier).refresh();
+              await _refreshRuntime();
+            },
           ),
           const SizedBox(height: 24),
           FilledButton(

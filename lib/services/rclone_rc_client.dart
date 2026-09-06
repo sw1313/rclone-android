@@ -132,6 +132,29 @@ class RcloneRcClient {
     await call('config/delete', {'name': name});
   }
 
+  /// 用当前表单参数临时建远程并列表，不依赖是否已保存。测完立刻删掉临时项。
+  Future<int> probeRemote({
+    required String type,
+    required Map<String, String> parameters,
+    bool obscure = true,
+  }) async {
+    final name = '__probe_${DateTime.now().microsecondsSinceEpoch}';
+    try {
+      await createRemote(
+        name: name,
+        type: type,
+        parameters: parameters,
+        obscure: obscure,
+      );
+      final items = await listPath('$name:');
+      return items.length;
+    } finally {
+      try {
+        await deleteRemote(name);
+      } catch (_) {}
+    }
+  }
+
   Future<String> versionLabel() async {
     final body = await call('core/version');
     final version = body['version']?.toString();

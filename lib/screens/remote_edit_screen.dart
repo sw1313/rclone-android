@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/app_models.dart';
 import '../providers/app_providers.dart';
 
 class RemoteKind {
@@ -76,23 +77,67 @@ class _RemoteEditScreenState extends ConsumerState<RemoteEditScreen> {
     return url;
   }
 
+  String? _rcloneType() {
+    if (_kind == 'advanced') {
+      final type = _c('type').text.trim();
+      return type.isEmpty ? null : type;
+    }
+    return remoteKinds.firstWhere((e) => e.id == _kind).rcloneType;
+  }
+
   Future<void> _test() async {
     final client = ref.read(rcClientProvider);
     if (client == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('rclone 服务尚未就绪')));
       return;
     }
-    final name = _name.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先填写远程名称并保存，再测试')));
+    final type = _rcloneType();
+    if (type == null || type.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先选择或填写远程类型')));
       return;
+    }
+    var params = Map<String, String>.from(_parameters())
+      ..removeWhere((key, value) => value.isEmpty);
+    if (type == 'webdav' && (params['url'] ?? '').isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请填写 WebDAV URL')));
+      return;
+    }
+    final existingName = widget.existingName;
+    final remotes = ref.read(remotesProvider).valueOrNull ?? const [];
+    RemoteInfo? existing;
+    if (existingName != null) {
+      for (final item in remotes) {
+        if (item.name == existingName) {
+          existing = item;
+          break;
+        }
+      }
+    }
+    var obscure = _obscure;
+    if (existing != null) {
+      const secrets = {'pass', 'secret_access_key', 'token', 'client_secret'};
+      var copiedObscured = false;
+      for (final key in secrets) {
+        if ((params[key] ?? '').isEmpty) {
+          final old = existing.params[key]?.toString() ?? '';
+          if (old.isNotEmpty) {
+            params[key] = old;
+            copiedObscured = true;
+          }
+        }
+      }
+      if (copiedObscured) obscure = false;
     }
     setState(() => _saving = true);
     try {
-      final items = await client.listPath('$name:');
+      final count = await client.probeRemote(
+        type: type,
+        parameters: params,
+        obscure: obscure,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('连接成功，列出 ${items.length} 项')),
+        SnackBar(content: Text('连接成功，列出 $count 项')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -247,11 +292,11 @@ class _RemoteEditScreenState extends ConsumerState<RemoteEditScreen> {
     switch (_kind) {
       case 'webdav':
         return [
-          _box('url', 'WebDAV URL', hint: 'http://192.168.1.8:5244/dav'),
+          _box('url', 'WebDAV URL', hint: 'http://192.168.1.100:5005/dav'),
           const Padding(
             padding: EdgeInsets.only(bottom: 12),
             child: Text(
-              '局域网 HTTP 根地址可以写，例如 http://192.168.50.238:5055/ 。'
+              '局域网 HTTP 根地址可以写，例如 http://192.168.1.100:5005/ 。'
               '若网页能开、WebDAV 连不上，多半是服务挂在 /dav 或 /webdav，请把路径补上。',
             ),
           ),

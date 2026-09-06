@@ -21,10 +21,27 @@ class WifiRulesScreen extends ConsumerWidget {
     }
 
     String title(WifiRule rule) {
-      final kind = rule.isVpn ? 'VPN' : 'WiFi';
-      final when = rule.trigger == 'connect' ? '已连接时' : '未连接时';
+      String named(String kind, String name) =>
+          name.isEmpty || name == '*' ? '任意$kind' : '$kind $name';
+      String state(String trigger) => trigger == 'connect' ? '已连接' : '未连接';
+      String edge(String kind, String trigger) => trigger == 'connect'
+          ? (kind == 'VPN' ? '开启 VPN' : '连上 WiFi')
+          : (kind == 'VPN' ? '关闭 VPN' : '断开 WiFi');
       final action = rule.action == 'mount' ? '挂载' : '卸载';
-      return '$kind ${rule.ssid} · $when$action';
+      if (rule.isBoth) {
+        final triggerIsVpn = rule.triggerSource == 'vpn';
+        final cond = triggerIsVpn
+            ? '${named('WiFi', rule.ssid)}${state(rule.wifiTrigger)}'
+            : '${named('VPN', rule.resolvedVpnName)}${state(rule.resolvedVpnTrigger)}';
+        final trig = triggerIsVpn
+            ? edge('VPN', rule.resolvedVpnTrigger)
+            : edge('WiFi', rule.wifiTrigger);
+        return '$cond 时$trig → $action';
+      }
+      if (rule.isVpn) {
+        return '${named('VPN', rule.resolvedVpnName)}${state(rule.resolvedVpnTrigger)}时$action';
+      }
+      return '${named('WiFi', rule.ssid)}${state(rule.wifiTrigger)}时$action';
     }
 
     return Scaffold(
@@ -52,7 +69,7 @@ class WifiRulesScreen extends ConsumerWidget {
           const ListTile(
             dense: true,
             leading: Icon(Icons.info_outline),
-            title: Text('按“现在连着什么”判断：已经连上会挂，已经断开且还挂着会卸。'),
+            title: Text('单条件按当前状态判断。组合规则是「前提已成立时，触发器发生变化才执行」，例如 WiFi 已断开时再开关 VPN。'),
           ),
           const Divider(height: 1),
           Expanded(
@@ -65,7 +82,13 @@ class WifiRulesScreen extends ConsumerWidget {
                       final rule = rules[index];
                       return Card(
                         child: ListTile(
-                          leading: Icon(rule.isVpn ? Icons.vpn_lock : Icons.wifi),
+                          leading: Icon(
+                            rule.isBoth
+                                ? Icons.hub_outlined
+                                : rule.isVpn
+                                    ? Icons.vpn_lock
+                                    : Icons.wifi,
+                          ),
                           title: Text(title(rule)),
                           subtitle: Text(names(rule).isEmpty ? '未选择挂载配置' : names(rule)),
                           trailing: Switch(

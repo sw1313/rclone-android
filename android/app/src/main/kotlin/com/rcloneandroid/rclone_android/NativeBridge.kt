@@ -46,10 +46,15 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
     private fun handle(call: MethodCall): Any? {
         val paths = AppPaths(activity)
         return when (call.method) {
-            "prepareBinaries" -> BinaryInstaller.install(activity)
+            "prepareBinaries" -> {
+                val ready = BinaryInstaller.install(activity)
+                BootHook.sync(activity)
+                ready
+            }
             "getStatus" -> status()
             "startService" -> {
                 RcloneService.start(activity)
+                BootHook.sync(activity)
                 true
             }
             "startRcd" -> RcloneDaemon.start(activity)
@@ -87,6 +92,7 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 true
             }
             "openAppSettings" -> onMain { SettingsIntents.appDetails(activity) }
+            "openAutostartSettings" -> onMain { SettingsIntents.autostart(activity) }
             "moveTaskToBack" -> onMain {
                 activity.moveTaskToBack(true)
                 true
@@ -102,6 +108,9 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 val file = File(paths.filesDir, name)
                 file.parentFile?.mkdirs()
                 file.writeText(content)
+                if (name == "settings.json") {
+                    BootHook.sync(activity)
+                }
                 true
             }
             "readConfig" -> if (paths.configFile.exists()) paths.configFile.readText() else ""
@@ -145,6 +154,7 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
             "serviceRunning" to RcloneService.isRunning(),
             "hasAllFiles" to SettingsIntents.hasAllFiles(),
             "batteryIgnored" to SettingsIntents.isIgnoringBattery(activity),
+            "bootHookInstalled" to BootHook.isInstalled(),
             "rcloneVersion" to rcloneVersion(paths),
         ).apply { putAll(daemon) }
     }

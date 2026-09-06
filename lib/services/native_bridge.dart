@@ -89,6 +89,10 @@ class NativeBridge {
     return _launchMessage(await _channel.invokeMethod('openAppSettings'));
   }
 
+  Future<String> openAutostartSettings() async {
+    return _launchMessage(await _channel.invokeMethod('openAutostartSettings'));
+  }
+
   Future<void> moveTaskToBack() async {
     await _channel.invokeMethod('moveTaskToBack');
   }

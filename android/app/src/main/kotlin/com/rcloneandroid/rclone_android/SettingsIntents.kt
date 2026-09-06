@@ -47,6 +47,18 @@ object SettingsIntents {
         return result(already = false, opened = true, ignored = false, page = page, message = "已打开应用设置")
     }
 
+    fun autostart(activity: Activity): Map<String, Any?> {
+        val pkg = activity.packageName
+        val page = launch(activity, autostartIntents(pkg))
+        return result(
+            already = false,
+            opened = true,
+            ignored = false,
+            page = page,
+            message = "请允许本应用「自启动」。小米不打开这项，开机广播到不了",
+        )
+    }
+
     fun isIgnoringBattery(activity: Activity): Boolean {
         val pm = activity.getSystemService(PowerManager::class.java)
         return pm.isIgnoringBatteryOptimizations(activity.packageName)
@@ -73,6 +85,23 @@ object SettingsIntents {
         } else {
             listOf(request, requestBare, listPage, appBattery, details)
         }
+    }
+
+    private fun autostartIntents(pkg: String): List<Intent> {
+        val miuiManage = Intent().setClassName(
+            "com.miui.securitycenter",
+            "com.miui.permcenter.autostart.AutoStartManagementActivity",
+        )
+        val miuiOp = Intent("miui.intent.action.OP_AUTO_START").addCategory(Intent.CATEGORY_DEFAULT)
+        val miuiApp = Intent().setClassName(
+            "com.miui.securitycenter",
+            "com.miui.appmanager.ApplicationsDetailsActivity",
+        ).putExtra("package_name", pkg).putExtra("package_label", "rclone 挂载")
+        val hiddenApps = Intent().setClassName(
+            "com.miui.powerkeeper",
+            "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+        ).putExtra("package_name", pkg).putExtra("package_label", "rclone 挂载")
+        return listOf(miuiManage, miuiOp, miuiApp, hiddenApps, packageDetails(pkg))
     }
 
     private fun allFilesIntents(pkg: String): List<Intent> {

@@ -1,0 +1,6 @@
+id=rclone-android
+name=rclone 挂载开机自启
+version=v1
+versionCode=1
+author=rclone-android
+description=开机后台拉起 rclone 服务，按 WiFi/VPN 规则决定是否挂载。可在 Magisk 模块列表里删除；卸载应用后也会自动消失。

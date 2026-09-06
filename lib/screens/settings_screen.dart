@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../providers/app_providers.dart';
+import '../services/runtime_permissions.dart';
 import 'logs_screen.dart';
 import 'wifi_rules_screen.dart';
 
@@ -74,11 +74,31 @@ class SettingsScreen extends ConsumerWidget {
           ),
           SwitchListTile(
             title: const Text('开机自启'),
-            subtitle: const Text('开机后拉起前台服务。是否挂载看当前 WiFi/VPN 是否匹配规则，不要求“刚好这时连上”'),
+            subtitle: Text(
+              settings.startOnBoot
+                  ? (status.bootHookInstalled
+                      ? '已安装 Magisk 模块，开机只后台拉服务，是否挂载看规则。可在 Magisk 模块列表里删除'
+                      : '开机后台拉起服务，不打开界面。小米还需允许下方「自启动」')
+                  : '关闭后会移除 Magisk 模块，重启不再拉服务',
+            ),
             value: settings.startOnBoot,
-            onChanged: (v) => ref.read(settingsProvider.notifier).update(
-                  settings.copyWith(startOnBoot: v),
-                ),
+            onChanged: (v) async {
+              await ref.read(settingsProvider.notifier).update(
+                    settings.copyWith(startOnBoot: v),
+                  );
+              await ref.read(nativeStatusProvider.notifier).refresh();
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.restart_alt),
+            title: const Text('允许自启动'),
+            subtitle: Text(
+              status.bootHookInstalled
+                  ? 'Magisk 模块已就绪。也可在 Magisk 里删除「rclone 挂载开机自启」'
+                  : '小米/HyperOS 会拦截开机广播，请在安全中心允许本应用自启动',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _openSetting(context, ref, native.openAutostartSettings),
           ),
           SwitchListTile(
             title: const Text('按规则自动挂载/卸载'),
@@ -115,12 +135,21 @@ class SettingsScreen extends ConsumerWidget {
             title: const Text('申请 Root'),
             subtitle: Text(status.rootAvailable ? '已获得 Root' : '真实挂载必须授权'),
             onTap: () async {
-              final ok = await native.requestRoot();
-              await ref.read(nativeStatusProvider.notifier).refresh();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(ok ? '已获得 Root' : '未获得 Root')),
-                );
+              try {
+                final ok = await native.requestRoot();
+                if (!context.mounted) return;
+                await ref.read(nativeStatusProvider.notifier).refresh();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(ok ? '已获得 Root' : '未获得 Root')),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('申请 Root 失败：$e')),
+                  );
+                }
               }
             },
           ),
@@ -159,11 +188,20 @@ class SettingsScreen extends ConsumerWidget {
           ListTile(
             leading: const Icon(Icons.location_on_outlined),
             title: const Text('定位 / 附近的设备'),
-            subtitle: const Text('Android 读取 WiFi 名称需要这些权限'),
-            onTap: () async {
-              await Permission.locationWhenInUse.request();
-              await Permission.nearbyWifiDevices.request();
-            },
+            subtitle: Text(
+              status.locationGranted || status.nearbyWifiGranted
+                  ? '已授予，可读取 WiFi 名称'
+                  : 'Android 读取 WiFi 名称需要这些权限',
+            ),
+            trailing: status.locationGranted || status.nearbyWifiGranted
+                ? const Icon(Icons.check_circle, color: Colors.green)
+                : const Icon(Icons.chevron_right),
+            onTap: status.locationGranted || status.nearbyWifiGranted
+                ? null
+                : () async {
+                    await RuntimePermissions.requestMissing();
+                    await ref.read(nativeStatusProvider.notifier).refresh();
+                  },
           ),
           ListTile(
             leading: const Icon(Icons.app_settings_alt),

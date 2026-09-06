@@ -15,8 +15,11 @@ class WifiRuleEditScreen extends ConsumerStatefulWidget {
 
 class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
   final _ssid = TextEditingController();
+  final _vpnName = TextEditingController();
   String _kind = 'wifi';
-  String _trigger = 'connect';
+  String _wifiTrigger = 'connect';
+  String _vpnTrigger = 'connect';
+  String _triggerSource = 'vpn';
   String _action = 'mount';
   late Set<String> _ids;
 
@@ -24,33 +27,42 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
   void initState() {
     super.initState();
     final existing = widget.existing;
-    _ssid.text = existing?.ssid ?? '';
     _kind = existing?.kind ?? 'wifi';
-    _trigger = existing?.trigger ?? 'connect';
     _action = existing?.action ?? 'mount';
+    _triggerSource = existing?.triggerSource ?? 'vpn';
     _ids = {...?existing?.profileIds};
+    if (existing == null) {
+      if (_kind == 'both') {
+        _wifiTrigger = 'disconnect';
+      }
+      return;
+    }
+    if (existing.kind == 'vpn') {
+      _vpnName.text = existing.resolvedVpnName;
+      _vpnTrigger = existing.resolvedVpnTrigger;
+    } else if (existing.kind == 'both') {
+      _ssid.text = existing.ssid;
+      _wifiTrigger = existing.trigger;
+      _vpnName.text = existing.resolvedVpnName;
+      _vpnTrigger = existing.resolvedVpnTrigger;
+    } else {
+      _ssid.text = existing.ssid;
+      _wifiTrigger = existing.trigger;
+    }
   }
 
   @override
   void dispose() {
     _ssid.dispose();
+    _vpnName.dispose();
     super.dispose();
   }
 
-  Future<void> _useCurrent() async {
-    final native = ref.read(nativeBridgeProvider);
-    if (_kind == 'vpn') {
-      final vpn = await native.getCurrentVpn();
-      if (vpn != null && vpn.isNotEmpty) {
-        setState(() => _ssid.text = vpn.split('、').first);
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('当前没有检测到 VPN。可先连上 Tailscale，或填写 Tailscale / *')),
-        );
-      }
-      return;
-    }
-    final ssid = await native.getCurrentSsid();
+  bool get _usesWifi => _kind == 'wifi' || _kind == 'both';
+  bool get _usesVpn => _kind == 'vpn' || _kind == 'both';
+
+  Future<void> _useCurrentWifi() async {
+    final ssid = await ref.read(nativeBridgeProvider).getCurrentSsid();
     if (ssid != null) {
       setState(() => _ssid.text = ssid);
     } else if (mounted) {
@@ -60,19 +72,32 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
     }
   }
 
-  Future<void> _save() async {
-    final target = _ssid.text.trim();
-    if (target.isEmpty) {
+  Future<void> _useCurrentVpn() async {
+    final vpn = await ref.read(nativeBridgeProvider).getCurrentVpn();
+    if (vpn != null && vpn.isNotEmpty) {
+      setState(() => _vpnName.text = vpn.split('、').first);
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_kind == 'vpn' ? '请填写 VPN 名称，或填 * 表示任意 VPN' : '请填写 SSID')),
+        const SnackBar(content: Text('当前没有检测到 VPN。可先连上 VPN，或填写名称 / *')),
       );
-      return;
+    }
+  }
+
+  Future<void> _save() async {
+    if (_usesWifi && _ssid.text.trim().isEmpty) {
+      _ssid.text = '*';
+    }
+    if (_usesVpn && _vpnName.text.trim().isEmpty) {
+      _vpnName.text = '*';
     }
     final rule = WifiRule(
       id: widget.existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       kind: _kind,
-      ssid: target,
-      trigger: _trigger,
+      ssid: _kind == 'vpn' ? _vpnName.text.trim() : _ssid.text.trim(),
+      trigger: _kind == 'vpn' ? _vpnTrigger : _wifiTrigger,
+      vpnName: _usesVpn ? _vpnName.text.trim() : '',
+      vpnTrigger: _usesVpn ? _vpnTrigger : 'connect',
+      triggerSource: _kind == 'both' ? _triggerSource : _kind,
       action: _action,
       profileIds: _ids.toList(),
       enabled: widget.existing?.enabled ?? true,
@@ -81,11 +106,80 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  Widget _wifiFields({required String title, required String stateLabel, required NativeStatus status}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _ssid,
+          decoration: InputDecoration(
+            labelText: 'SSID / *',
+            hintText: '* 表示任意 WiFi',
+            helperText: '当前：${status.currentSsid ?? '无'}',
+            border: const OutlineInputBorder(),
+            suffixIcon: IconButton(
+              tooltip: '使用当前 WiFi',
+              onPressed: _useCurrentWifi,
+              icon: const Icon(Icons.my_location),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          key: ValueKey('wifi-$_wifiTrigger'),
+          initialValue: _wifiTrigger,
+          items: const [
+            DropdownMenuItem(value: 'connect', child: Text('该 WiFi 已连接')),
+            DropdownMenuItem(value: 'disconnect', child: Text('该 WiFi 未连接 / 已断开')),
+          ],
+          onChanged: (v) => setState(() => _wifiTrigger = v ?? 'connect'),
+          decoration: InputDecoration(labelText: stateLabel, border: const OutlineInputBorder()),
+        ),
+      ],
+    );
+  }
+
+  Widget _vpnFields({required String title, required String stateLabel, required NativeStatus status}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _vpnName,
+          decoration: InputDecoration(
+            labelText: 'VPN 名称 / 包名 / *',
+            hintText: '* 表示任意 VPN',
+            helperText: '当前：${status.currentVpn ?? '无'}',
+            border: const OutlineInputBorder(),
+            suffixIcon: IconButton(
+              tooltip: '使用当前 VPN',
+              onPressed: _useCurrentVpn,
+              icon: const Icon(Icons.vpn_lock),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          key: ValueKey('vpn-$_vpnTrigger'),
+          initialValue: _vpnTrigger,
+          items: const [
+            DropdownMenuItem(value: 'connect', child: Text('开启 / 已连接')),
+            DropdownMenuItem(value: 'disconnect', child: Text('关闭 / 已断开')),
+          ],
+          onChanged: (v) => setState(() => _vpnTrigger = v ?? 'connect'),
+          decoration: InputDecoration(labelText: stateLabel, border: const OutlineInputBorder()),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final mounts = ref.watch(mountsProvider);
     final status = ref.watch(nativeStatusProvider);
-    final isVpn = _kind == 'vpn';
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.existing == null ? '添加自动规则' : '编辑自动规则'),
@@ -104,49 +198,61 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           DropdownButtonFormField<String>(
+            key: ValueKey('kind-$_kind'),
             initialValue: _kind,
             items: const [
-              DropdownMenuItem(value: 'wifi', child: Text('WiFi')),
-              DropdownMenuItem(value: 'vpn', child: Text('VPN（如 Tailscale）')),
+              DropdownMenuItem(value: 'wifi', child: Text('仅 WiFi')),
+              DropdownMenuItem(value: 'vpn', child: Text('仅 VPN')),
+              DropdownMenuItem(value: 'both', child: Text('前提状态 + 触发器')),
             ],
-            onChanged: (v) => setState(() => _kind = v ?? 'wifi'),
-            decoration: const InputDecoration(labelText: '网络类型', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _ssid,
-            decoration: InputDecoration(
-              labelText: isVpn ? 'VPN 名称 / 包名 / *' : 'SSID',
-              hintText: isVpn ? 'Tailscale 或 *' : null,
-              helperText: isVpn
-                  ? '可填 Tailscale、com.tailscale.ipn，或 * 表示任意 VPN。当前：${status.currentVpn ?? '无'}。开机时也会按当前是否连着核对。'
-                  : '按当前是否连着判断。开机时 WiFi 已经断了、盘还挂着，也会卸掉。',
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                tooltip: isVpn ? '使用当前 VPN' : '使用当前 WiFi',
-                onPressed: _useCurrent,
-                icon: const Icon(Icons.my_location),
-              ),
+            onChanged: (v) => setState(() {
+              _kind = v ?? 'wifi';
+              if (_kind == 'both') {
+                _triggerSource = 'vpn';
+                _wifiTrigger = 'disconnect';
+              }
+            }),
+            decoration: const InputDecoration(
+              labelText: '规则类型',
+              helperText: '「前提 + 触发器」例如：WiFi 已断开时，再开启或关闭 VPN 才执行',
+              border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
-            initialValue: _trigger,
-            items: [
-              DropdownMenuItem(
-                value: 'connect',
-                child: Text(isVpn ? '该 VPN 已连接时' : '该 WiFi 已连接时'),
-              ),
-              DropdownMenuItem(
-                value: 'disconnect',
-                child: Text(isVpn ? '该 VPN 未连接时' : '该 WiFi 未连接时'),
-              ),
+          if (_kind == 'both') ...[
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              key: ValueKey('src-$_triggerSource'),
+              initialValue: _triggerSource,
+              items: const [
+                DropdownMenuItem(value: 'vpn', child: Text('触发器是 VPN 开启 / 关闭')),
+                DropdownMenuItem(value: 'wifi', child: Text('触发器是 WiFi 连上 / 断开')),
+              ],
+              onChanged: (v) => setState(() => _triggerSource = v ?? 'vpn'),
+              decoration: const InputDecoration(labelText: '哪一侧作为触发器', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 16),
+            if (_triggerSource == 'vpn') ...[
+              _wifiFields(title: '前提：当前须已成立的 WiFi 状态', stateLabel: '前提 WiFi 状态', status: status),
+              const SizedBox(height: 16),
+              _vpnFields(title: '触发器：VPN 发生变化时执行', stateLabel: 'VPN 变化', status: status),
+            ] else ...[
+              _vpnFields(title: '前提：当前须已成立的 VPN 状态', stateLabel: '前提 VPN 状态', status: status),
+              const SizedBox(height: 16),
+              _wifiFields(title: '触发器：WiFi 发生变化时执行', stateLabel: 'WiFi 变化', status: status),
             ],
-            onChanged: (v) => setState(() => _trigger = v ?? 'connect'),
-            decoration: const InputDecoration(labelText: '条件', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
+          ] else ...[
+            if (_usesWifi) ...[
+              const SizedBox(height: 16),
+              _wifiFields(title: 'WiFi 条件', stateLabel: 'WiFi 状态', status: status),
+            ],
+            if (_usesVpn) ...[
+              const SizedBox(height: 16),
+              _vpnFields(title: 'VPN 条件', stateLabel: 'VPN 状态', status: status),
+            ],
+          ],
+          const SizedBox(height: 16),
           DropdownButtonFormField<String>(
+            key: ValueKey('action-$_action'),
             initialValue: _action,
             items: const [
               DropdownMenuItem(value: 'mount', child: Text('挂载所选配置')),

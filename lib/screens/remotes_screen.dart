@@ -47,10 +47,23 @@ class RemotesScreen extends ConsumerWidget {
       ),
       body: remotes.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败：$e')),
+        error: (e, _) => Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text('加载失败：$e'),
+          ),
+        ),
         data: (items) {
           if (items.isEmpty) {
-            return const Center(child: Text('还没有远程。可添加 WebDAV/SFTP，或导入电脑上的 rclone.conf。'));
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(24, 0, 24, 88),
+                child: Text(
+                  '还没有远程。可添加 WebDAV/SFTP，或导入电脑上的 rclone.conf。',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            );
           }
           return ListView.builder(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
