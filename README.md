@@ -6,7 +6,7 @@
 
 ## 安装
 
-到 [Releases](https://github.com/sw1313/rclone-android/releases) 下载 APK。当前通用包含 arm64 / armeabi-v7a / x86_64，体积较大。
+到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.4**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
 
 需要：
 
@@ -14,16 +14,20 @@
 - 真实挂载：已 Root，并授权本应用
 - Magisk 用户请把 **挂载命名空间** 设为 **全局**，然后重启，否则其他 App 看不到挂载目录
 
-首次打开请授予：通知、所有文件访问、定位（用来读 WiFi 名称）。小米等设备建议把本应用省电策略设为「无限制」，并允许自启动。
+首次打开请授予：通知、所有文件访问、定位（用来读 WiFi 名称）。已授予的通知 / 定位不会再弹申请。小米等设备请把省电策略设为「无限制」，并允许自启动。
 
 ## 功能
 
 - 添加 WebDAV / SFTP / FTP / S3 / alias；Google Drive / OneDrive / Dropbox 可通过导入 `rclone.conf` 配置
+- 添加远程时可先用当前表单参数测试连接，不必先保存
 - 导入、导出 `rclone.conf`
 - 常用 rclone 挂载参数（VFS 缓存、transfers、带宽限制等）
 - 首页开关：按实际 `/proc/mounts` 显示是否已挂载
-- 按 **当前** WiFi / VPN（如 Tailscale）状态自动挂载或卸载，开机后也会核对，不依赖「刚刚连上」那一下
-- 开机自启前台服务（是否挂载仍看规则）
+- 自动规则：
+  - 仅 WiFi / 仅 VPN：按**当前**是否连着判断，开机后也会核对
+  - **前提状态 + 触发器**：例如 WiFi 已断开时再开启或关闭 VPN 才执行，不靠「两边碰巧同时满足」
+- 开机自启：有 Root 时写入 Magisk 模块「rclone 挂载开机自启」，只后台拉服务、不打开界面。可在 Magisk 模块列表里删除；卸载本应用后模块也会自行消失。是否挂载仍看规则
+- 系统返回不会退出应用：文件页先回上级，其他页先回挂载页，首页退到后台
 - 网断了也可以进应用，用懒卸载关掉挂载，避免卡死
 - 无 Root 时使用内置文件管理器
 
@@ -54,6 +58,8 @@ rclone 与 fusermount 体积较大，默认不进 Git。构建前必须先跑下
 3. 内核提供 `/dev/fuse`
 
 部分机型上 `fusermount` 可能不兼容。强制关闭本应用**不会**自动卸盘：rclone 由 Root 在后台拉起，和 App 进程不是同一个。网不通时打开应用关掉对应开关即可。
+
+开机自启模块路径为 `/data/adb/modules/rclone-android`。不想开机拉服务时，可在 Magisk 里删除该模块，或在应用设置里关掉「开机自启」。
 
 ## 许可证
 
