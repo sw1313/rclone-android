@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -30,54 +31,58 @@ class WifiMonitor private constructor(context: Context) {
     private val app = context.applicationContext
     private val cm = app.getSystemService(ConnectivityManager::class.java)
     private var lastSsid: String? = null
+    private var lastWifiUp = false
     private var lastVpns: Set<String> = emptySet()
     private var wifiRegistered = false
     private var vpnRegistered = false
+    private val wifiNets = mutableSetOf<Network>()
+    private val vpnTracks = mutableMapOf<Network, VpnInfo>()
 
     private val wifiCallback: ConnectivityManager.NetworkCallback =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
-                override fun onAvailable(network: Network) = onWifiUp(network, null)
-                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                    onWifiUp(network, caps)
+                override fun onAvailable(network: Network) {
+                    wifiNets += network
                 }
-                override fun onLost(network: Network) = onWifiDown()
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    onWifiCapabilities(network, caps)
+                }
+                override fun onLost(network: Network) = onWifiLost(network)
             }
         } else {
             object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) = onWifiUp(network, null)
-                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                    onWifiUp(network, caps)
+                override fun onAvailable(network: Network) {
+                    wifiNets += network
                 }
-                override fun onLost(network: Network) = onWifiDown()
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                    onWifiCapabilities(network, caps)
+                }
+                override fun onLost(network: Network) = onWifiLost(network)
             }
         }
 
     private val vpnCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = onVpnChanged()
-        override fun onLost(network: Network) = onVpnChanged()
-        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-            onVpnChanged()
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            onVpnCapabilities(network, caps)
         }
+        override fun onLinkPropertiesChanged(network: Network, props: LinkProperties) {
+            onVpnLink(network, props)
+        }
+        override fun onLost(network: Network) = onVpnLost(network)
     }
 
     fun start() {
+        lastSsid = currentSsid()
+        lastWifiUp = lastSsid != null || hasWifiTransport()
+        lastVpns = currentVpns().map { it.fingerprint }.toSet()
         if (!wifiRegistered) {
-            val request = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .build()
-            cm.registerNetworkCallback(request, wifiCallback)
+            cm.registerNetworkCallback(wifiRequest(), wifiCallback)
             wifiRegistered = true
         }
         if (!vpnRegistered) {
-            val request = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
-                .build()
-            cm.registerNetworkCallback(request, vpnCallback)
+            cm.registerNetworkCallback(vpnRequest(), vpnCallback)
             vpnRegistered = true
         }
-        lastSsid = currentSsid()
-        lastVpns = currentVpns().map { it.fingerprint }.toSet()
         val vpnText = currentVpns().joinToString("、") { it.preferred }.ifBlank { "无" }
         EventHub.log(
             "info",
@@ -96,18 +101,18 @@ class WifiMonitor private constructor(context: Context) {
         }
     }
 
-    fun currentSsid(): String? {
+    fun currentSsid(androidOnly: Boolean = false): String? {
         val active = cm.activeNetwork
         ssidFromNetwork(active, cm.getNetworkCapabilities(active))?.let { return it }
         for (network in cm.allNetworks) {
             ssidFromNetwork(network, cm.getNetworkCapabilities(network))?.let { return it }
         }
-        return try {
+        try {
             val wm = app.getSystemService(WifiManager::class.java)
-            sanitize(wm.connectionInfo?.ssid)
+            sanitize(wm.connectionInfo?.ssid)?.let { return it }
         } catch (_: Exception) {
-            null
         }
+        return if (androidOnly) null else rootSsid()
     }
 
     fun currentVpns(): List<VpnInfo> {
@@ -141,12 +146,12 @@ class WifiMonitor private constructor(context: Context) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return true
         }
-        return try {
+        try {
             val info = app.getSystemService(WifiManager::class.java).connectionInfo
-            info != null && info.networkId != -1
+            if (info != null && info.networkId != -1) return true
         } catch (_: Exception) {
-            false
         }
+        return rootWifiUp()
     }
 
     fun currentVpnSummary(): String? {
@@ -182,51 +187,120 @@ class WifiMonitor private constructor(context: Context) {
         )
     }
 
-    private fun onWifiUp(network: Network, caps: NetworkCapabilities?) {
-        val ssid = ssidFromNetwork(network, caps ?: cm.getNetworkCapabilities(network)) ?: currentSsid()
-        if (ssid.isNullOrBlank() || ssid == lastSsid) return
+    private fun wifiRequest(): NetworkRequest {
+        return NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+    }
+
+    private fun vpnRequest(): NetworkRequest {
+        return NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+    }
+
+    private fun hasWifiTransport(): Boolean {
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return true
+        }
+        return false
+    }
+
+    // SSID 只从回调参数读。官方文档禁止在回调里再 getNetworkCapabilities()。
+    private fun onWifiCapabilities(network: Network, caps: NetworkCapabilities) {
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
+        wifiNets += network
+        val ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            sanitize((caps.transportInfo as? WifiInfo)?.ssid)
+        } else {
+            null
+        }
+        if (lastWifiUp && (ssid == null || ssid == lastSsid)) {
+            if (ssid != null) lastSsid = ssid
+            return
+        }
         val previous = lastSsid
-        lastSsid = ssid
-        EventHub.log("info", "WiFi 已连接: $ssid")
-        EventHub.emit(mapOf("type" to "wifi", "event" to "connect", "ssid" to ssid, "previous" to previous))
-        WifiRuleEngine.requestReconcile(app, "WiFi 已连接", NetEvent("wifi", "connect", ssid))
+        lastWifiUp = true
+        if (ssid != null) lastSsid = ssid
+        val name = ssid ?: "已连接"
+        EventHub.log("info", "WiFi 已连接: $name")
+        EventHub.emit(mapOf("type" to "wifi", "event" to "connect", "ssid" to name, "previous" to previous))
+        WifiRuleEngine.requestReconcile(app, "WiFi 已连接", NetEvent("wifi", "connect", ssid.orEmpty()))
     }
 
-    private fun onWifiDown() {
-        val previous = lastSsid ?: return
-        val still = currentSsid()
-        if (!still.isNullOrBlank()) return
+    private fun onWifiLost(network: Network) {
+        wifiNets -= network
+        if (wifiNets.isNotEmpty()) return
+        if (!lastWifiUp && lastSsid == null) return
+        val previous = lastSsid
+        lastWifiUp = false
         lastSsid = null
-        EventHub.log("info", "WiFi 已断开: $previous")
+        EventHub.log("info", "WiFi 已断开: ${previous ?: "未知"}")
         EventHub.emit(mapOf("type" to "wifi", "event" to "disconnect", "ssid" to previous))
-        WifiRuleEngine.requestReconcile(app, "WiFi 已断开", NetEvent("wifi", "disconnect", previous))
+        WifiRuleEngine.requestReconcile(app, "WiFi 已断开", NetEvent("wifi", "disconnect", previous.orEmpty()))
     }
 
-    private fun onVpnChanged() {
-        val now = currentVpns()
-        val nowKeys = now.map { it.fingerprint }.toSet()
-        if (nowKeys == lastVpns) return
-        val added = now.filter { it.fingerprint !in lastVpns }
-        val removed = lastVpns - nowKeys
-        lastVpns = nowKeys
-        for (vpn in added) {
-            EventHub.log("info", "VPN 已连接: ${vpn.preferred}")
-            EventHub.emit(
-                mapOf(
-                    "type" to "vpn",
-                    "event" to "connect",
-                    "vpn" to vpn.preferred,
-                    "package" to vpn.packageName,
-                    "iface" to vpn.iface,
-                ),
-            )
-            WifiRuleEngine.requestReconcile(app, "VPN 已连接", NetEvent("vpn", "connect", vpn.preferred, vpn.keys))
+    private fun onVpnCapabilities(network: Network, caps: NetworkCapabilities) {
+        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+        val old = vpnTracks[network]
+        rememberVpn(network, vpnFromCaps(caps, old))
+    }
+
+    private fun onVpnLink(network: Network, props: LinkProperties) {
+        val old = vpnTracks[network]
+        rememberVpn(
+            network,
+            VpnInfo(props.interfaceName, old?.packageName, old?.label),
+        )
+    }
+
+    private fun onVpnLost(network: Network) {
+        val old = vpnTracks.remove(network) ?: return
+        lastVpns = lastVpns - old.fingerprint
+        EventHub.log("info", "VPN 已断开: ${old.preferred}")
+        EventHub.emit(mapOf("type" to "vpn", "event" to "disconnect", "vpn" to old.preferred))
+        WifiRuleEngine.requestReconcile(app, "VPN 已断开", NetEvent("vpn", "disconnect", old.preferred, old.keys))
+    }
+
+    private fun rememberVpn(network: Network, info: VpnInfo) {
+        val prev = vpnTracks.put(network, info)
+        if (prev != null) {
+            lastVpns = lastVpns - prev.fingerprint + info.fingerprint
+            return
         }
-        for (key in removed) {
-            EventHub.log("info", "VPN 已断开: $key")
-            EventHub.emit(mapOf("type" to "vpn", "event" to "disconnect", "vpn" to key))
-            WifiRuleEngine.requestReconcile(app, "VPN 已断开", NetEvent("vpn", "disconnect", key, listOf(key)))
+        if (info.fingerprint in lastVpns) return
+        lastVpns = lastVpns + info.fingerprint
+        EventHub.log("info", "VPN 已连接: ${info.preferred}")
+        EventHub.emit(
+            mapOf(
+                "type" to "vpn",
+                "event" to "connect",
+                "vpn" to info.preferred,
+                "package" to info.packageName,
+                "iface" to info.iface,
+            ),
+        )
+        WifiRuleEngine.requestReconcile(app, "VPN 已连接", NetEvent("vpn", "connect", info.preferred, info.keys))
+    }
+
+    private fun vpnFromCaps(caps: NetworkCapabilities, old: VpnInfo?): VpnInfo {
+        var pkg = old?.packageName
+        var label = old?.label
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val uid = caps.ownerUid
+            if (uid > 0) {
+                pkg = runCatching { app.packageManager.getPackagesForUid(uid)?.firstOrNull() }.getOrNull() ?: pkg
+                if (pkg != null) {
+                    label = runCatching {
+                        val appInfo = app.packageManager.getApplicationInfo(pkg, 0)
+                        app.packageManager.getApplicationLabel(appInfo).toString()
+                    }.getOrNull() ?: label
+                }
+            }
         }
+        return VpnInfo(old?.iface, pkg, label)
     }
 
     private fun ssidFromNetwork(network: Network?, caps: NetworkCapabilities?): String? {
@@ -253,6 +327,37 @@ class WifiMonitor private constructor(context: Context) {
             lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
                 lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
         }
+    }
+
+    private fun rootSsid(): String? {
+        if (!RootShell.isAvailable()) return null
+        val result = RootShell.exec(
+            """
+            for d in wlan0 wlan1 wifi0; do
+              s=${'$'}(iw dev ${'$'}d link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
+              [ -z "${'$'}s" ] && s=${'$'}(iw ${'$'}d link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
+              [ -n "${'$'}s" ] && echo "${'$'}s" && exit 0
+            done
+            exit 1
+            """.trimIndent(),
+            log = false,
+        )
+        return sanitize(result.out.firstOrNull())
+    }
+
+    private fun rootWifiUp(): Boolean {
+        if (!RootShell.isAvailable()) return false
+        val result = RootShell.exec(
+            """
+            for d in wlan0 wlan1 wifi0; do
+              iw dev ${'$'}d link 2>/dev/null | grep -q '^Connected' && exit 0
+              iw ${'$'}d link 2>/dev/null | grep -q '^Connected' && exit 0
+            done
+            exit 1
+            """.trimIndent(),
+            log = false,
+        )
+        return result.isSuccess
     }
 
     private fun sanitize(raw: String?): String? {
@@ -316,6 +421,12 @@ object WifiRuleEngine {
         val settings = readObject(paths.settingsFile)
         if (!settings.optBoolean("wifiMonitorEnabled", true)) return
         if (!paths.wifiRulesFile.exists() || !paths.mountsFile.exists()) return
+        if (BootHook.isInstalled()) {
+            ModuleRuntime.export(context)
+            ModuleRuntime.poke(reason)
+            ModuleRuntime.syncUi()
+            return
+        }
         val monitor = WifiMonitor.get(context)
         RootMountManager.syncFromSystem()
         val ssid = monitor.currentSsid()

@@ -11,7 +11,7 @@ class RcloneApp : Application() {
         Shell.setDefaultBuilder(
             Shell.Builder.create()
                 .setFlags(Shell.FLAG_MOUNT_MASTER)
-                .setTimeout(30),
+                .setTimeout(60),
         )
     }
 

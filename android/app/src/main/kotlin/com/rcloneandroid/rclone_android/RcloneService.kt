@@ -9,12 +9,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 
 class RcloneService : Service() {
     private var wifiMonitor: WifiMonitor? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var lastText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -39,6 +43,7 @@ class RcloneService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.getStringExtra(EXTRA_ACTION) == ACTION_REFRESH) {
+            RootMountManager.hydrate()
             refreshNotification()
         } else {
             WifiRuleEngine.requestReconcile(this, "服务启动核对")
@@ -47,7 +52,7 @@ class RcloneService : Service() {
     }
 
     private fun scheduleStartupReconcile() {
-        for (delayMs in longArrayOf(500, 5000, 15000)) {
+        for (delayMs in longArrayOf(500)) {
             Thread {
                 try {
                     Thread.sleep(delayMs)
@@ -96,16 +101,36 @@ class RcloneService : Service() {
 
         fun refreshNotification() {
             val service = instance ?: return
-            val nm = service.getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIFICATION_ID, service.buildNotification())
+            Thread {
+                try {
+                    RootMountManager.hydrate()
+                    val text = service.statusText()
+                    service.main.post { service.applyForeground(text) }
+                } catch (_: Exception) {
+                }
+            }.start()
         }
     }
 
     private fun enterForeground() {
-        val notification = buildNotification()
+        applyForeground(statusText())
+    }
+
+    private fun statusText(): String {
+        val mounted = RootMountManager.listRecords()
+        return if (mounted.isEmpty()) {
+            if (RcloneDaemon.isRunning()) "rclone 服务运行中，尚未挂载" else "正在启动 rclone…"
+        } else {
+            "已挂载 ${mounted.size} 项：${mounted.joinToString("、") { it["name"].toString() }}"
+        }
+    }
+
+    private fun applyForeground(text: String) {
+        if (text == lastText && lastText != null) return
+        lastText = text
+        val notification = buildNotification(text)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // 只用 specialUse。location 在 Android 16 后台/授权后会 SecurityException 闪退。
                 ServiceCompat.startForeground(
                     this,
                     NOTIFICATION_ID,
@@ -120,7 +145,7 @@ class RcloneService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String = statusText()): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
@@ -133,12 +158,6 @@ class RcloneService : Service() {
             Intent(this, NotificationActionReceiver::class.java).setAction(NotificationActionReceiver.ACTION_UNMOUNT_ALL),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val mounted = RootMountManager.listRecords()
-        val text = if (mounted.isEmpty()) {
-            if (RcloneDaemon.isRunning()) "rclone 服务运行中，尚未挂载" else "正在启动 rclone…"
-        } else {
-            "已挂载 ${mounted.size} 项：${mounted.joinToString("、") { it["name"].toString() }}"
-        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_rclone)
             .setContentTitle(getString(R.string.app_name))

@@ -7,7 +7,7 @@ object BootHook {
     private const val MOD_ID = "rclone-android"
     private const val MOD_DIR = "/data/adb/modules/$MOD_ID"
     private const val OLD_SCRIPT = "/data/adb/service.d/rclone-android.sh"
-    private val MODULE_FILES = listOf("module.prop", "service.sh", "uninstall.sh")
+    private val MODULE_FILES = listOf("module.prop", "service.sh", "uninstall.sh", "common.sh", "watchdog.sh", "net.inotify")
 
     fun isInstalled(): Boolean {
         if (!RootShell.isAvailable()) return false
@@ -34,6 +34,7 @@ object BootHook {
             return
         }
         if (!enabled) {
+            ModuleRuntime.stopWatchdog()
             RootShell.exec("rm -rf $MOD_DIR; rm -f $OLD_SCRIPT")
             EventHub.log("info", "已关闭开机自启，移除 Magisk 模块")
             return
@@ -50,12 +51,13 @@ object BootHook {
         val src = RootShell.shQuote(staging.absolutePath)
         val copy = RootShell.exec(
             "mkdir -p $MOD_DIR && " +
-                "cp $src/module.prop $src/service.sh $src/uninstall.sh $MOD_DIR/ && " +
-                "chmod 755 $MOD_DIR/service.sh $MOD_DIR/uninstall.sh && " +
+                "cp $src/module.prop $src/service.sh $src/uninstall.sh $src/common.sh $src/watchdog.sh $src/net.inotify $MOD_DIR/ && " +
+                "chmod 755 $MOD_DIR/service.sh $MOD_DIR/uninstall.sh $MOD_DIR/common.sh $MOD_DIR/watchdog.sh $MOD_DIR/net.inotify && " +
                 "rm -f $MOD_DIR/disable $MOD_DIR/remove $OLD_SCRIPT",
         )
         if (copy.isSuccess && isInstalled()) {
-            EventHub.log("info", "已安装 Magisk 模块 $MOD_DIR，可在 Magisk 里自行删除")
+            ModuleRuntime.ensureWatchdog()
+            EventHub.log("info", "已安装 Magisk 模块 $MOD_DIR，由模块看门狗负责挂载")
         } else {
             EventHub.log(
                 "error",

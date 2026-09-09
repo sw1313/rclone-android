@@ -6,7 +6,7 @@
 
 ## 安装
 
-到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.4**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
+到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.5**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
 
 需要：
 
@@ -25,8 +25,8 @@
 - 首页开关：按实际 `/proc/mounts` 显示是否已挂载
 - 自动规则：
   - 仅 WiFi / 仅 VPN：按**当前**是否连着判断，开机后也会核对
-  - **前提状态 + 触发器**：例如 WiFi 已断开时再开启或关闭 VPN 才执行，不靠「两边碰巧同时满足」
-- 开机自启：有 Root 时写入 Magisk 模块「rclone 挂载开机自启」，只后台拉服务、不打开界面。可在 Magisk 模块列表里删除；卸载本应用后模块也会自行消失。是否挂载仍看规则
+  - **前提状态 + 触发器**：例如家里 WiFi 已经断开后，再开/关 VPN（如 Tailscale 的 `tun0`）才挂上或卸掉，不靠「两边碰巧同时满足」
+- 开机自启 / 看门狗：有 Root 时写入 Magisk 模块「rclone 挂载看门狗」。挂载和卸载由模块进程完成，不依赖 App 保活。可在 Magisk 模块列表里删除；卸载本应用后模块也会自行消失
 - 系统返回不会退出应用：文件页先回上级，其他页先回挂载页，首页退到后台
 - 网断了也可以进应用，用懒卸载关掉挂载，避免卡死
 - 无 Root 时使用内置文件管理器
@@ -57,9 +57,19 @@ rclone 与 fusermount 体积较大，默认不进 Git。构建前必须先跑下
 2. Magisk 挂载命名空间为全局
 3. 内核提供 `/dev/fuse`
 
-部分机型上 `fusermount` 可能不兼容。强制关闭本应用**不会**自动卸盘：rclone 由 Root 在后台拉起，和 App 进程不是同一个。网不通时打开应用关掉对应开关即可。
+部分机型上 `fusermount` 可能不兼容。小米 / HyperOS 会冻结或杀掉 App 进程（包括用 `su` 从应用里拉起的 rclone）。因此真实挂载改由 Magisk 模块看门狗负责：rclone 跑在模块自己的进程里，强制关闭本应用不会卸盘。网不通时打开应用关掉对应开关即可。
 
-开机自启模块路径为 `/data/adb/modules/rclone-android`。不想开机拉服务时，可在 Magisk 里删除该模块，或在应用设置里关掉「开机自启」。
+看门狗按**网络事件**工作，不是定时轮询：
+
+- App 在时：用系统 `NetworkCallback` 收 WiFi / VPN 变化（SSID 只从回调参数读），再通知模块执行
+- App 被冻或被杀时：模块用 `inotifyd` 监听 `/data/misc/net`（路由表变化），例如开关 WiFi、Tailscale 拉起 `tun0`
+- 单条件规则按当前状态执行，所以家里 WiFi 还连着但挂载进程没了，会补挂
+- 组合规则必须「前提已成立 + 触发器边沿」，开机或定时核对本身不会误触发
+- 挂上或卸掉后发广播刷新通知栏，不扫通知
+
+模块路径为 `/data/adb/modules/rclone-android`。不想后台挂载时，可在 Magisk 里删除该模块，或在应用设置里关掉「开机自启」。
+
+VPN 须是系统 `VpnService` 建出的接口（例如 Tailscale 的 `tun0`）。用 `ip link add` 假造的网卡不会进 Android 路由表，看门狗也收不到。
 
 ## 许可证
 

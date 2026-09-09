@@ -58,9 +58,22 @@ object RootMountManager {
         val fusePoint = "/mnt/rclone/$id"
         val relative = toEmulatedRelative(localPath)
 
-        unmountInternal(id, localPath, fusePoint, relative, quiet = true)
-
         val extra = jsonString(flags, "extraArgs")
+        ModuleRuntime.export()
+        if (BootHook.isInstalled()) {
+            ModuleRuntime.command("mount $id")
+            syncFromSystem()
+            if (!isMounted(id)) {
+                throw IllegalStateException("模块挂载失败，见看门狗日志")
+            }
+            val record = MountRecord(id, name, localPath, fusePoint, relative)
+            synchronized(mounted) { mounted[id] = record }
+            persistMounted()
+            EventHub.log("info", "已挂载 $name -> $localPath")
+            EventHub.emit(mapOf("type" to "mount", "id" to id, "mounted" to true, "localPath" to localPath))
+            return mapOf("ok" to true, "id" to id, "localPath" to localPath, "fusePoint" to fusePoint)
+        }
+        unmountInternal(id, localPath, fusePoint, relative, quiet = true)
         val script = File(paths.scriptsDir, "mount-$id.sh")
         script.writeText(buildMountScript(paths, id, remoteSpec, localPath, fusePoint, relative, flags, extra))
         script.setExecutable(true, false)
@@ -83,6 +96,7 @@ object RootMountManager {
             )
         }
 
+        detachCgroup(id)
         val record = MountRecord(id, name, localPath, fusePoint, relative)
         synchronized(mounted) { mounted[id] = record }
         persistMounted()
@@ -92,6 +106,15 @@ object RootMountManager {
     }
 
     fun unmount(id: String): Map<String, Any?> {
+        if (BootHook.isInstalled()) {
+            ModuleRuntime.command("unmount $id")
+            synchronized(mounted) { mounted.remove(id) }
+            persistMounted()
+            syncFromSystem()
+            EventHub.emit(mapOf("type" to "mount", "id" to id, "mounted" to false))
+            EventHub.log("info", "已卸载 $id")
+            return mapOf("ok" to true, "id" to id)
+        }
         val record = synchronized(mounted) { mounted[id] }
         unmountInternal(id, record?.localPath, record?.fusePoint ?: "/mnt/rclone/$id", record?.relative)
         synchronized(mounted) { mounted.remove(id) }
@@ -105,6 +128,14 @@ object RootMountManager {
     }
 
     fun unmountAll() {
+        if (BootHook.isInstalled()) {
+            ModuleRuntime.command("unmount_all")
+            synchronized(mounted) { mounted.clear() }
+            persistMounted()
+            syncFromSystem()
+            EventHub.log("info", "已全部卸载")
+            return
+        }
         syncFromSystem()
         val ids = synchronized(mounted) { mounted.keys.toList() }
         ids.forEach { runCatching { unmount(it) } }
@@ -478,6 +509,18 @@ object RootMountManager {
         } catch (_: Exception) {
             emptyMap()
         }
+    }
+
+    private fun detachCgroup(id: String) {
+        RootShell.exec(
+            """
+            pid=${'$'}(cat /mnt/rclone/$id.pid 2>/dev/null || true)
+            [ -n "${'$'}pid" ] || exit 0
+            echo "${'$'}pid" > /sys/fs/cgroup/cgroup.procs 2>/dev/null || true
+            echo "${'$'}pid" > /sys/fs/cgroup/memory/cgroup.procs 2>/dev/null || true
+            """.trimIndent(),
+            log = false,
+        )
     }
 
     private fun leftoverCleanup() {

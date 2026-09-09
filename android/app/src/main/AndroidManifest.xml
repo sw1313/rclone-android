@@ -88,6 +88,14 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".StatusRefreshReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.rcloneandroid.rclone_android.REFRESH_STATUS" />
+            </intent-filter>
+        </receiver>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />

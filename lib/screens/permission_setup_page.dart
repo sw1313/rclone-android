@@ -89,7 +89,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
     if (!ref.read(nativeStatusProvider).bootHookInstalled) {
       final go = await _confirm(
         title: '需要允许自启动',
-        body: '小米/HyperOS 默认拦截开机广播。请在安全中心允许本应用自启动。有 Root 时会安装 Magisk 模块「rclone 挂载开机自启」，开机只后台拉服务，可在 Magisk 里删除。',
+        body: '小米/HyperOS 默认拦截开机广播。请在安全中心允许本应用自启动。有 Root 时会安装 Magisk 模块「rclone 挂载看门狗」，挂载由模块按网络事件执行，可在 Magisk 里删除。',
         action: '去允许',
       );
       if (go == true && mounted) {
@@ -172,7 +172,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
             title: '忽略电池优化',
             subtitle: status.batteryIgnored
                 ? '已忽略'
-                : '避免小米省电策略杀掉挂载服务，请选「无限制」',
+                : '挂载已改由 Magisk 看门狗负责；选「无限制」仍有助于通知栏',
             granted: status.batteryIgnored,
             onTap: () => _run(ref.read(nativeBridgeProvider).requestIgnoreBattery),
           ),
@@ -180,8 +180,8 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
             icon: Icons.restart_alt,
             title: '允许自启动',
             subtitle: status.bootHookInstalled
-                ? 'Magisk 开机模块已安装，可在 Magisk 里删除'
-                : '小米不打开自启动，开机广播到不了，服务起不来',
+                ? 'Magisk 看门狗已安装，挂载不依赖自启动'
+                : '无模块时小米不打开自启动，开机广播到不了',
             granted: status.bootHookInstalled,
             onTap: () => _run(ref.read(nativeBridgeProvider).openAutostartSettings),
           ),

@@ -77,9 +77,9 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: Text(
               settings.startOnBoot
                   ? (status.bootHookInstalled
-                      ? '已安装 Magisk 模块，开机只后台拉服务，是否挂载看规则。可在 Magisk 模块列表里删除'
+                      ? '已安装 Magisk 看门狗，按规则挂载/卸载，不依赖 App 保活。可在 Magisk 模块列表里删除'
                       : '开机后台拉起服务，不打开界面。小米还需允许下方「自启动」')
-                  : '关闭后会移除 Magisk 模块，重启不再拉服务',
+                  : '关闭后会移除 Magisk 模块，重启后不再自动挂载',
             ),
             value: settings.startOnBoot,
             onChanged: (v) async {
@@ -94,7 +94,7 @@ class SettingsScreen extends ConsumerWidget {
             title: const Text('允许自启动'),
             subtitle: Text(
               status.bootHookInstalled
-                  ? 'Magisk 模块已就绪。也可在 Magisk 里删除「rclone 挂载开机自启」'
+                  ? 'Magisk 看门狗已就绪。也可在 Magisk 里删除「rclone 挂载看门狗」'
                   : '小米/HyperOS 会拦截开机广播，请在安全中心允许本应用自启动',
             ),
             trailing: const Icon(Icons.chevron_right),
@@ -102,7 +102,7 @@ class SettingsScreen extends ConsumerWidget {
           ),
           SwitchListTile(
             title: const Text('按规则自动挂载/卸载'),
-            subtitle: const Text('根据当前 WiFi / VPN 状态执行规则'),
+            subtitle: const Text('单条件按当前状态；组合规则看前提 + 触发器。由 Magisk 看门狗执行，不依赖 App 保活'),
             value: settings.wifiMonitorEnabled,
             onChanged: (v) => ref.read(settingsProvider.notifier).update(
                   settings.copyWith(wifiMonitorEnabled: v),

@@ -1,6 +1,6 @@
 id=rclone-android
-name=rclone 挂载开机自启
-version=v1
-versionCode=1
+name=rclone 挂载看门狗
+version=v3
+versionCode=3
 author=rclone-android
-description=开机后台拉起 rclone 服务，按 WiFi/VPN 规则决定是否挂载。可在 Magisk 模块列表里删除；卸载应用后也会自动消失。
+description=由 Magisk 进程按 WiFi/VPN 规则挂载和卸载，不依赖 App 保活。可在模块列表里删除；卸载应用后也会自动消失。

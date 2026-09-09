@@ -1,0 +1,24 @@
+#!/system/bin/sh
+# inotifyd 回调：网络路由变化时唤醒看门狗。
+# 用法与 box_for_magisk 相同：inotifyd 本脚本 /data/misc/net
+# $1=事件字母（w 写入 / c 创建 / d 删除 / n 未挂载等）
+events=$1
+case "$events" in
+  w|c|d|n|y) ;;
+  *) exit 0 ;;
+esac
+
+MODDIR=/data/adb/modules/rclone-android
+[ -f "$MODDIR/watchdog.sh" ] || exit 0
+
+# 一次连/断网会连写路由表，合并成事件结束后的一次 tick
+stamp=$MODDIR/inotify.followup
+if [ -f "$stamp" ]; then
+  exit 0
+fi
+echo $$ > "$stamp"
+(
+  sleep 1
+  rm -f "$stamp"
+  sh "$MODDIR/watchdog.sh" tick >/dev/null 2>&1
+) &

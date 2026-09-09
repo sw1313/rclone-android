@@ -46,15 +46,10 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
     private fun handle(call: MethodCall): Any? {
         val paths = AppPaths(activity)
         return when (call.method) {
-            "prepareBinaries" -> {
-                val ready = BinaryInstaller.install(activity)
-                BootHook.sync(activity)
-                ready
-            }
+            "prepareBinaries" -> BinaryInstaller.install(activity)
             "getStatus" -> status()
             "startService" -> {
                 RcloneService.start(activity)
-                BootHook.sync(activity)
                 true
             }
             "startRcd" -> RcloneDaemon.start(activity)
@@ -108,8 +103,14 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 val file = File(paths.filesDir, name)
                 file.parentFile?.mkdirs()
                 file.writeText(content)
-                if (name == "settings.json") {
-                    BootHook.sync(activity)
+                when (name) {
+                    "settings.json" -> BootHook.sync(activity)
+                    "mounts.json", "wifi_rules.json" -> {
+                        ModuleRuntime.export(activity)
+                        if (BootHook.isInstalled()) {
+                            ModuleRuntime.poke("写入 $name")
+                        }
+                    }
                 }
                 true
             }

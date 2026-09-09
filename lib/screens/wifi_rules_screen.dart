@@ -69,7 +69,7 @@ class WifiRulesScreen extends ConsumerWidget {
           const ListTile(
             dense: true,
             leading: Icon(Icons.info_outline),
-            title: Text('单条件按当前状态判断。组合规则是「前提已成立时，触发器发生变化才执行」，例如 WiFi 已断开时再开关 VPN。'),
+            title: Text('单条件按当前状态判断。组合规则是「前提已成立时，触发器发生变化才执行」，例如 WiFi 已断开时再开关 VPN。模块看门狗会侦测这些变化，不依赖 App 活着。'),
           ),
           const Divider(height: 1),
           Expanded(
