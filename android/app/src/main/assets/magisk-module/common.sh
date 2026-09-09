@@ -116,7 +116,6 @@ in_init_ns() {
 }
 
 notify_app() {
-  pidof "$PKG" >/dev/null 2>&1 || return 0
   am broadcast -a com.rcloneandroid.rclone_android.REFRESH_STATUS \
     -n "$PKG/.StatusRefreshReceiver" --receiver-foreground >/dev/null 2>&1 || true
 }

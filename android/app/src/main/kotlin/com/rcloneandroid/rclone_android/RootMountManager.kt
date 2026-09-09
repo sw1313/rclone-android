@@ -102,6 +102,7 @@ object RootMountManager {
         persistMounted()
         EventHub.log("info", "已挂载 $name -> $localPath")
         EventHub.emit(mapOf("type" to "mount", "id" to id, "mounted" to true, "localPath" to localPath))
+        MountNotifier.refresh(RcloneApp.instance)
         return mapOf("ok" to true, "id" to id, "localPath" to localPath, "fusePoint" to fusePoint)
     }
 
@@ -113,6 +114,7 @@ object RootMountManager {
             syncFromSystem()
             EventHub.emit(mapOf("type" to "mount", "id" to id, "mounted" to false))
             EventHub.log("info", "已卸载 $id")
+            MountNotifier.refresh(RcloneApp.instance)
             return mapOf("ok" to true, "id" to id)
         }
         val record = synchronized(mounted) { mounted[id] }
@@ -124,6 +126,7 @@ object RootMountManager {
         persistMounted()
         EventHub.emit(mapOf("type" to "mount", "id" to id, "mounted" to false))
         EventHub.log("info", "已卸载 $id")
+        MountNotifier.refresh(RcloneApp.instance)
         return mapOf("ok" to true, "id" to id)
     }
 
@@ -134,6 +137,7 @@ object RootMountManager {
             persistMounted()
             syncFromSystem()
             EventHub.log("info", "已全部卸载")
+            MountNotifier.refresh(RcloneApp.instance)
             return
         }
         syncFromSystem()
@@ -141,6 +145,7 @@ object RootMountManager {
         ids.forEach { runCatching { unmount(it) } }
         leftoverCleanup()
         syncFromSystem()
+        MountNotifier.refresh(RcloneApp.instance)
     }
 
     fun cleanupStale(reason: String) {

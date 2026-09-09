@@ -49,8 +49,16 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 BootHook.sync(activity)
                 installed
             }
-            "getStatus" -> status()
-            "startRcd" -> RcloneDaemon.start(activity)
+            "getStatus" -> {
+                val value = status()
+                MountNotifier.refresh(activity)
+                value
+            }
+            "startRcd" -> {
+                val started = RcloneDaemon.start(activity)
+                MountNotifier.refresh(activity)
+                started
+            }
             "beginTransfer" -> {
                 val id = call.argument<String>("id") ?: throw IllegalArgumentException("缺少 id")
                 RcloneService.begin(
@@ -112,6 +120,8 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
             }
             "openAllFilesSettings" -> onMain { SettingsIntents.allFilesAccess(activity) }
             "openAppSettings" -> onMain { SettingsIntents.appDetails(activity) }
+            "requestNotifications" -> onMain { SettingsIntents.requestNotifications(activity) }
+            "openNotificationSettings" -> onMain { SettingsIntents.openNotificationSettings(activity) }
             "moveTaskToBack" -> onMain {
                 activity.moveTaskToBack(true)
                 true
@@ -178,6 +188,7 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
             "mounted" to RootMountManager.listRecords(),
             "serviceRunning" to RcloneService.isRunning(),
             "hasAllFiles" to SettingsIntents.hasAllFiles(),
+            "notificationsEnabled" to SettingsIntents.notificationsEnabled(activity),
             "bootHookInstalled" to BootHook.isInstalled(),
             "rcloneVersion" to rcloneVersion(paths),
         ).apply { putAll(daemon) }

@@ -125,6 +125,14 @@ class NativeBridge {
     return _launchMessage(await _channel.invokeMethod('openAppSettings'));
   }
 
+  Future<String> requestNotifications() async {
+    return _launchMessage(await _channel.invokeMethod('requestNotifications'));
+  }
+
+  Future<String> openNotificationSettings() async {
+    return _launchMessage(await _channel.invokeMethod('openNotificationSettings'));
+  }
+
   Future<void> moveTaskToBack() async {
     await _channel.invokeMethod('moveTaskToBack');
   }

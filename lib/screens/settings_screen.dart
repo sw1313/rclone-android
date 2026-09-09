@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/app_providers.dart';
-import '../services/runtime_permissions.dart';
 import 'logs_screen.dart';
 import 'wifi_rules_screen.dart';
 
@@ -159,16 +158,22 @@ class SettingsScreen extends ConsumerWidget {
           ),
           ListTile(
             leading: const Icon(Icons.notifications_outlined),
-            title: const Text('通知（传输进度）'),
-            subtitle: const Text('只在下载/上传时显示进度条，完成后消失。不给也能在应用内传输'),
-            onTap: () async {
-              await RuntimePermissions.requestNotification();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已请求通知权限')),
-                );
-              }
-            },
+            title: const Text('通知'),
+            subtitle: Text(
+              status.notificationsEnabled
+                  ? '已允许。用于挂载状态和传输进度，不保活应用'
+                  : '未允许。点按打开系统通知设置',
+            ),
+            trailing: status.notificationsEnabled
+                ? const Icon(Icons.check_circle, color: Colors.green)
+                : const Icon(Icons.chevron_right),
+            onTap: () => _openSetting(
+              context,
+              ref,
+              status.notificationsEnabled
+                  ? native.openNotificationSettings
+                  : native.requestNotifications,
+            ),
           ),
           ListTile(
             leading: const Icon(Icons.app_settings_alt),

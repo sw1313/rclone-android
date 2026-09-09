@@ -401,6 +401,7 @@ class NativeStatus {
     this.mountedIds = const [],
     this.serviceRunning = false,
     this.hasAllFiles = false,
+    this.notificationsEnabled = false,
     this.batteryIgnored = false,
     this.bootHookInstalled = false,
   });
@@ -426,6 +427,7 @@ class NativeStatus {
   final List<String> mountedIds;
   final bool serviceRunning;
   final bool hasAllFiles;
+  final bool notificationsEnabled;
   final bool batteryIgnored;
   final bool bootHookInstalled;
 
@@ -455,6 +457,7 @@ class NativeStatus {
     List<String>? mountedIds,
     bool? serviceRunning,
     bool? hasAllFiles,
+    bool? notificationsEnabled,
     bool? batteryIgnored,
     bool? bootHookInstalled,
   }) {
@@ -480,6 +483,7 @@ class NativeStatus {
       mountedIds: mountedIds ?? this.mountedIds,
       serviceRunning: serviceRunning ?? this.serviceRunning,
       hasAllFiles: hasAllFiles ?? this.hasAllFiles,
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
       batteryIgnored: batteryIgnored ?? this.batteryIgnored,
       bootHookInstalled: bootHookInstalled ?? this.bootHookInstalled,
     );
@@ -510,6 +514,7 @@ class NativeStatus {
           .toList(),
       serviceRunning: map['serviceRunning'] == true,
       hasAllFiles: map['hasAllFiles'] == true,
+      notificationsEnabled: map['notificationsEnabled'] == true,
       batteryIgnored: map['batteryIgnored'] == true,
       bootHookInstalled: map['bootHookInstalled'] == true,
     );

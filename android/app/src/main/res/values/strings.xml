@@ -2,4 +2,6 @@
     <string name="app_name">rclone 挂载</string>
     <string name="service_channel_name">文件传输</string>
     <string name="service_channel_desc">下载或上传时显示进度，完成后自动消失</string>
+    <string name="mount_channel_name">挂载状态</string>
+    <string name="mount_channel_desc">常驻显示挂载或未挂载状态。不保活应用</string>
 </resources>

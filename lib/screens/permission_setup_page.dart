@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/app_providers.dart';
-import '../services/runtime_permissions.dart';
 import 'app_shell.dart';
 
 class PermissionSetupPage extends ConsumerStatefulWidget {
@@ -15,22 +14,12 @@ class PermissionSetupPage extends ConsumerStatefulWidget {
 class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
     with WidgetsBindingObserver {
   bool _prompted = false;
-  bool _notificationOk = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _refreshRuntime();
-      await _promptMissing();
-    });
-  }
-
-  Future<void> _refreshRuntime() async {
-    final notificationOk = await RuntimePermissions.notificationOk();
-    if (!mounted) return;
-    setState(() => _notificationOk = notificationOk);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _promptMissing());
   }
 
   @override
@@ -43,7 +32,6 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       ref.read(nativeStatusProvider.notifier).refresh();
-      _refreshRuntime();
     }
   }
 
@@ -112,6 +100,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
   @override
   Widget build(BuildContext context) {
     final status = ref.watch(nativeStatusProvider);
+    final native = ref.read(nativeBridgeProvider);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -123,7 +112,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           Text(
-            '必需要的是「所有文件访问」。真实挂载由 Magisk 看门狗执行，不必开省电或自启动。通知只在下载/上传时用来显示进度条。',
+            '必需要的是「所有文件访问」。通知用来显示挂载状态和传输进度，不保活应用。',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 12),
@@ -134,20 +123,21 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
                 ? '已授予'
                 : '挂载到手机目录、下载/上传公共目录都需要',
             granted: status.hasAllFiles,
-            onTap: () => _run(ref.read(nativeBridgeProvider).openAllFilesSettings),
+            onTap: () => _run(native.openAllFilesSettings),
           ),
           _PermissionCard(
             icon: Icons.notifications_outlined,
-            title: '通知（传输时）',
-            subtitle: _notificationOk
-                ? '已授予，下载/上传会显示进度通知'
-                : '类似浏览器下载：只在传文件时保活，完成后消失',
-            granted: _notificationOk,
+            title: '通知',
+            subtitle: status.notificationsEnabled
+                ? '已允许，用于挂载状态和传输进度'
+                : '点按后弹出系统授权，或打开通知设置',
+            granted: status.notificationsEnabled,
             optional: true,
-            onTap: () async {
-              await RuntimePermissions.requestNotification();
-              await _refreshRuntime();
-            },
+            onTap: () => _run(
+              status.notificationsEnabled
+                  ? native.openNotificationSettings
+                  : native.requestNotifications,
+            ),
           ),
           const SizedBox(height: 24),
           FilledButton(
@@ -195,7 +185,7 @@ class _PermissionCard extends StatelessWidget {
         trailing: granted
             ? const Icon(Icons.check_circle, color: Colors.green)
             : const Icon(Icons.chevron_right),
-        onTap: granted ? null : onTap,
+        onTap: onTap,
       ),
     );
   }

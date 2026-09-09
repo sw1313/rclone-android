@@ -37,7 +37,6 @@ Apache-2.0 与 GPL-3.0 可以组合使用。libsu 本身仍按 Apache-2.0 授权
   - `flutter_riverpod` — MIT
   - `http` — BSD 3-Clause
   - `file_picker` — MIT
-  - `permission_handler` — MIT
   - `intl` — BSD 3-Clause
   - `path` — BSD 3-Clause
   - `cupertino_icons` — MIT

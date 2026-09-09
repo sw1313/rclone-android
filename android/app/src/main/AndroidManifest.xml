@@ -55,6 +55,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.rcloneandroid.rclone_android.CANCEL_TRANSFER" />
+                <action android:name="com.rcloneandroid.rclone_android.UNMOUNT_ALL" />
             </intent-filter>
         </receiver>
 
@@ -81,6 +82,9 @@
         </intent>
         <intent>
             <action android:name="android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.APP_NOTIFICATION_SETTINGS" />
         </intent>
     </queries>
 </manifest>

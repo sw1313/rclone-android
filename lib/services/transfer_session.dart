@@ -1,5 +1,4 @@
 import 'native_bridge.dart';
-import 'runtime_permissions.dart';
 
 typedef TransferReporter = void Function({int? percent, String? text, int? jobId});
 
@@ -14,7 +13,7 @@ class TransferSession {
     required String name,
     required Future<T> Function(TransferReporter report) body,
   }) async {
-    await RuntimePermissions.requestNotification();
+    await native.requestNotifications();
     final id = 't${++_seq}';
     await native.beginTransfer(id: id, title: title, text: name);
     try {
