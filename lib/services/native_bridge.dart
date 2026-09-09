@@ -26,10 +26,6 @@ class NativeBridge {
     await _channel.invokeMethod('prepareBinaries');
   }
 
-  Future<void> startService() async {
-    await _channel.invokeMethod('startService');
-  }
-
   Future<NativeStatus> startRcd() async {
     final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>('startRcd');
     return NativeStatus.fromMap(raw ?? const {});
@@ -77,8 +73,48 @@ class NativeBridge {
     await _channel.invokeMethod('startWifiMonitor');
   }
 
-  Future<String> requestIgnoreBattery() async {
-    return _launchMessage(await _channel.invokeMethod('requestIgnoreBattery'));
+  Future<void> beginTransfer({
+    required String id,
+    required String title,
+    required String text,
+    int? progress,
+    int? jobId,
+  }) async {
+    await _channel.invokeMethod('beginTransfer', {
+      'id': id,
+      'title': title,
+      'text': text,
+      'progress': progress ?? -1,
+      'jobId': ?jobId,
+    });
+  }
+
+  Future<void> updateTransfer({
+    required String id,
+    String? title,
+    String? text,
+    int? progress,
+    int? jobId,
+  }) async {
+    await _channel.invokeMethod('updateTransfer', {
+      'id': id,
+      'title': ?title,
+      'text': ?text,
+      'progress': ?progress,
+      'jobId': ?jobId,
+    });
+  }
+
+  Future<void> endTransfer({
+    required String id,
+    required bool success,
+    required String text,
+  }) async {
+    await _channel.invokeMethod('endTransfer', {
+      'id': id,
+      'success': success,
+      'text': text,
+    });
   }
 
   Future<String> openAllFilesSettings() async {
@@ -87,10 +123,6 @@ class NativeBridge {
 
   Future<String> openAppSettings() async {
     return _launchMessage(await _channel.invokeMethod('openAppSettings'));
-  }
-
-  Future<String> openAutostartSettings() async {
-    return _launchMessage(await _channel.invokeMethod('openAutostartSettings'));
   }
 
   Future<void> moveTaskToBack() async {

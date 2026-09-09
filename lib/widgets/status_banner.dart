@@ -14,7 +14,6 @@ class StatusBanner extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final missing = <String>[
       if (!status.hasAllFiles) '所有文件访问',
-      if (!status.batteryIgnored) '忽略电池优化',
     ];
     final text = missing.isNotEmpty
         ? '还缺权限：${missing.join('、')}。可到「设置」里授予。'

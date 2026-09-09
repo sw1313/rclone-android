@@ -14,64 +14,166 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.LinkedHashMap
 
 class RcloneService : Service() {
-    private var wifiMonitor: WifiMonitor? = null
     private val main = Handler(Looper.getMainLooper())
-    private var lastText: String? = null
+    private val transfers = LinkedHashMap<String, Transfer>()
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         createChannel()
-        enterForeground()
-        Thread {
-            try {
-                BinaryInstaller.install(this)
-                BootHook.sync(this)
-                RcloneDaemon.start(this)
-                RootMountManager.hydrate()
-                refreshNotification()
-            } catch (e: Exception) {
-                EventHub.log("error", "服务启动 rclone 失败: ${e.message}")
-            }
-        }.start()
-        wifiMonitor = WifiMonitor.get(this).also { it.start() }
-        scheduleStartupReconcile()
-        EventHub.log("info", "前台服务已启动")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.getStringExtra(EXTRA_ACTION) == ACTION_REFRESH) {
-            RootMountManager.hydrate()
-            refreshNotification()
-        } else {
-            WifiRuleEngine.requestReconcile(this, "服务启动核对")
+        when (intent?.action) {
+            ACTION_CANCEL -> cancelAll()
+            ACTION_BEGIN -> beginFromIntent(intent)
+            ACTION_UPDATE -> updateFromIntent(intent)
+            ACTION_END -> endFromIntent(intent)
         }
-        return START_STICKY
-    }
-
-    private fun scheduleStartupReconcile() {
-        for (delayMs in longArrayOf(500)) {
-            Thread {
-                try {
-                    Thread.sleep(delayMs)
-                    if (instance == null) return@Thread
-                    WifiRuleEngine.reconcile(this, "启动复查 ${delayMs}ms")
-                    refreshNotification()
-                } catch (_: Exception) {
-                }
-            }.start()
+        if (transfers.isEmpty()) {
+            stopAndClear()
+            return START_NOT_STICKY
         }
+        enterForeground()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        wifiMonitor?.stop()
-        instance = null
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun beginFromIntent(intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_ID) ?: return
+        transfers[id] = Transfer(
+            id = id,
+            title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "传输文件" },
+            text = intent.getStringExtra(EXTRA_TEXT).orEmpty(),
+            progress = intent.getIntExtra(EXTRA_PROGRESS, -1),
+            jobId = intent.getIntExtra(EXTRA_JOB, -1).takeIf { it >= 0 },
+        )
+    }
+
+    private fun updateFromIntent(intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_ID) ?: return
+        val current = transfers[id] ?: return
+        if (intent.hasExtra(EXTRA_TEXT)) current.text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+        if (intent.hasExtra(EXTRA_TITLE)) {
+            val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+            if (title.isNotBlank()) current.title = title
+        }
+        if (intent.hasExtra(EXTRA_PROGRESS)) current.progress = intent.getIntExtra(EXTRA_PROGRESS, -1)
+        if (intent.hasExtra(EXTRA_JOB)) {
+            current.jobId = intent.getIntExtra(EXTRA_JOB, -1).takeIf { it >= 0 }
+        }
+    }
+
+    private fun endFromIntent(intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_ID) ?: return
+        val success = intent.getBooleanExtra(EXTRA_SUCCESS, true)
+        val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+        transfers.remove(id)
+        if (transfers.isEmpty()) {
+            showFinished(success, text.ifBlank { if (success) "传输完成" else "传输失败" })
+        }
+    }
+
+    private fun cancelAll() {
+        val jobs = transfers.values.mapNotNull { it.jobId }
+        transfers.clear()
+        Thread {
+            for (jobId in jobs) stopJob(jobId)
+        }.start()
+        showFinished(false, "已取消传输")
+        stopAndClear()
+    }
+
+    private fun enterForeground() {
+        val notification = buildProgressNotification() ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (t: Throwable) {
+            EventHub.log("error", "进入传输前台失败: ${t.message}")
+        }
+    }
+
+    private fun buildProgressNotification(): Notification? {
+        val items = transfers.values.toList()
+        if (items.isEmpty()) return null
+        val first = items.first()
+        val title = if (items.size == 1) first.title else "正在处理 ${items.size} 项"
+        val text = first.text.ifBlank { first.title }
+        val progress = first.progress
+        val open = openAppIntent()
+        val cancel = PendingIntent.getBroadcast(
+            this,
+            1,
+            Intent(this, NotificationActionReceiver::class.java).setAction(ACTION_CANCEL),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_rclone)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .addAction(0, "取消", cancel)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+        if (progress in 0..100) {
+            builder.setProgress(100, progress, false)
+        } else {
+            builder.setProgress(100, 0, true)
+        }
+        return builder.build()
+    }
+
+    private fun showFinished(success: Boolean, text: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_rclone)
+            .setContentTitle(if (success) "传输完成" else "传输结束")
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setOngoing(false)
+            .setContentIntent(openAppIntent())
+            .build()
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+        runCatching { nm.notify(DONE_ID, notification) }
+    }
+
+    private fun stopAndClear() {
+        transfers.clear()
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
+        stopSelf()
+    }
+
+    private fun openAppIntent(): PendingIntent {
+        return PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
 
     private fun createChannel() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -84,88 +186,113 @@ class RcloneService : Service() {
         nm.createNotificationChannel(channel)
     }
 
+    private data class Transfer(
+        val id: String,
+        var title: String,
+        var text: String,
+        var progress: Int,
+        var jobId: Int?,
+    )
+
     companion object {
-        const val CHANNEL_ID = "rclone_service"
+        const val CHANNEL_ID = "rclone_transfer"
         const val NOTIFICATION_ID = 1001
-        const val EXTRA_ACTION = "action"
-        const val ACTION_REFRESH = "refresh"
+        const val DONE_ID = 1002
+        const val ACTION_BEGIN = "com.rcloneandroid.rclone_android.TRANSFER_BEGIN"
+        const val ACTION_UPDATE = "com.rcloneandroid.rclone_android.TRANSFER_UPDATE"
+        const val ACTION_END = "com.rcloneandroid.rclone_android.TRANSFER_END"
+        const val ACTION_CANCEL = "com.rcloneandroid.rclone_android.CANCEL_TRANSFER"
+        const val EXTRA_ID = "id"
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_TEXT = "text"
+        const val EXTRA_PROGRESS = "progress"
+        const val EXTRA_JOB = "jobId"
+        const val EXTRA_SUCCESS = "success"
 
         @Volatile
         private var instance: RcloneService? = null
 
-        fun isRunning(): Boolean = instance != null
+        fun isRunning(): Boolean = instance?.transfers?.isNotEmpty() == true
 
-        fun start(context: Context) {
-            BootStarter.startServiceNow(context, "应用内启动")
+        fun begin(
+            context: Context,
+            id: String,
+            title: String,
+            text: String,
+            progress: Int = -1,
+            jobId: Int? = null,
+        ) {
+            context.applicationContext.startForegroundService(
+                Intent(context, RcloneService::class.java)
+                    .setAction(ACTION_BEGIN)
+                    .putExtra(EXTRA_ID, id)
+                    .putExtra(EXTRA_TITLE, title)
+                    .putExtra(EXTRA_TEXT, text)
+                    .putExtra(EXTRA_PROGRESS, progress)
+                    .putExtra(EXTRA_JOB, jobId ?: -1),
+            )
         }
 
-        fun refreshNotification() {
-            val service = instance ?: return
-            Thread {
-                try {
-                    RootMountManager.hydrate()
-                    val text = service.statusText()
-                    service.main.post { service.applyForeground(text) }
-                } catch (_: Exception) {
+        fun update(
+            context: Context,
+            id: String,
+            text: String? = null,
+            title: String? = null,
+            progress: Int? = null,
+            jobId: Int? = null,
+        ) {
+            val service = instance
+            if (service != null) {
+                service.main.post {
+                    val current = service.transfers[id] ?: return@post
+                    if (text != null) current.text = text
+                    if (!title.isNullOrBlank()) current.title = title
+                    if (progress != null) current.progress = progress
+                    if (jobId != null) current.jobId = jobId.takeIf { it >= 0 }
+                    service.enterForeground()
                 }
-            }.start()
-        }
-    }
-
-    private fun enterForeground() {
-        applyForeground(statusText())
-    }
-
-    private fun statusText(): String {
-        val mounted = RootMountManager.listRecords()
-        return if (mounted.isEmpty()) {
-            if (RcloneDaemon.isRunning()) "rclone 服务运行中，尚未挂载" else "正在启动 rclone…"
-        } else {
-            "已挂载 ${mounted.size} 项：${mounted.joinToString("、") { it["name"].toString() }}"
-        }
-    }
-
-    private fun applyForeground(text: String) {
-        if (text == lastText && lastText != null) return
-        lastText = text
-        val notification = buildNotification(text)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ServiceCompat.startForeground(
-                    this,
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
+                return
             }
-        } catch (t: Throwable) {
-            EventHub.log("error", "进入前台失败: ${t.message}")
+            begin(context, id, title ?: "传输文件", text.orEmpty(), progress ?: -1, jobId)
         }
-    }
 
-    private fun buildNotification(text: String = statusText()): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val unmount = PendingIntent.getBroadcast(
-            this,
-            1,
-            Intent(this, NotificationActionReceiver::class.java).setAction(NotificationActionReceiver.ACTION_UNMOUNT_ALL),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_rclone)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
-            .setOngoing(true)
-            .setContentIntent(open)
-            .addAction(0, "全部卸载", unmount)
-            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .build()
+        fun end(@Suppress("UNUSED_PARAMETER") context: Context, id: String, success: Boolean, text: String) {
+            val service = instance ?: return
+            service.main.post {
+                service.transfers.remove(id)
+                if (service.transfers.isEmpty()) {
+                    service.showFinished(success, text)
+                    service.stopAndClear()
+                } else {
+                    service.enterForeground()
+                }
+            }
+        }
+
+        fun cancelAll() {
+            instance?.main?.post { instance?.cancelAll() }
+        }
+
+        private fun stopJob(jobId: Int) {
+            try {
+                RcloneDaemon.ensureCredentials()
+                val url = URL("${RcloneDaemon.url}job/stop")
+                val conn = (url.openConnection() as HttpURLConnection)
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                val token = android.util.Base64.encodeToString(
+                    "${RcloneDaemon.user}:${RcloneDaemon.pass}".toByteArray(),
+                    android.util.Base64.NO_WRAP,
+                )
+                conn.setRequestProperty("Authorization", "Basic $token")
+                conn.outputStream.use { it.write(JSONObject().put("jobid", jobId).toString().toByteArray()) }
+                conn.inputStream.close()
+                conn.disconnect()
+            } catch (_: Exception) {
+            }
+        }
     }
 }

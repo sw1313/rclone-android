@@ -67,7 +67,7 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
       setState(() => _ssid.text = ssid);
     } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('读不到 SSID。请授予定位或附近的设备权限，并已连接 WiFi。')),
+        const SnackBar(content: Text('读不到 WiFi 名称。请确认已连接，或手动填写 / 填 *')),
       );
     }
   }

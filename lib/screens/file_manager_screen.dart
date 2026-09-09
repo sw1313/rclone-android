@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import '../models/app_models.dart';
 import '../providers/app_providers.dart';
 import '../services/rclone_rc_client.dart';
+import '../services/transfer_session.dart';
 
 class FileManagerScreen extends ConsumerStatefulWidget {
   const FileManagerScreen({super.key});
@@ -23,6 +24,8 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
   List<RemoteEntry> _entries = [];
   bool _loading = false;
   String? _error;
+  String? _transferText;
+  int? _transferPercent;
 
   @override
   void initState() {
@@ -113,14 +116,25 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
     );
     if (ok != true) return;
     try {
-      if (entry.isDir) {
-        await _client?.purge('$_remote:', _join(entry.name));
-      } else {
-        await _client?.delete('$_remote:', _join(entry.name));
-      }
+      await TransferSession.run(
+        native: ref.read(nativeBridgeProvider),
+        title: '正在删除',
+        name: entry.name,
+        body: (report) async {
+          _setTransfer('正在删除 ${entry.name}', null);
+          report(text: '正在删除 ${entry.name}');
+          if (entry.isDir) {
+            await _client?.purge('$_remote:', _join(entry.name));
+          } else {
+            await _client?.delete('$_remote:', _join(entry.name));
+          }
+        },
+      );
       await _reload();
     } catch (e) {
       _toast('删除失败：$e');
+    } finally {
+      _setTransfer(null, null);
     }
   }
 
@@ -128,16 +142,32 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
 
   Future<void> _download(RemoteEntry entry) async {
     try {
-      final destDir = await ref.read(nativeBridgeProvider).defaultDownloadDir();
-      await _client?.copyFile(
-        srcFs: '$_remote:',
-        srcRemote: _join(entry.name),
-        dstFs: destDir,
-        dstRemote: entry.name,
+      final native = ref.read(nativeBridgeProvider);
+      final destDir = await native.defaultDownloadDir();
+      await TransferSession.run(
+        native: native,
+        title: '正在下载',
+        name: entry.name,
+        body: (report) async {
+          _setTransfer('正在下载 ${entry.name}', null);
+          await _client?.copyFile(
+            srcFs: '$_remote:',
+            srcRemote: _join(entry.name),
+            dstFs: destDir,
+            dstRemote: entry.name,
+            onJob: (jobId) => report(jobId: jobId),
+            onProgress: (percent, text) {
+              _setTransfer(text, percent);
+              report(percent: percent, text: text);
+            },
+          );
+        },
       );
       _toast('已下载到 $destDir/${entry.name}');
     } catch (e) {
       _toast('下载失败：$e');
+    } finally {
+      _setTransfer(null, null);
     }
   }
 
@@ -159,17 +189,40 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
       } else {
         throw RcloneRcException('无法读取所选文件');
       }
-      await _client?.copyFile(
-        srcFs: localFs,
-        srcRemote: localName,
-        dstFs: '$_remote:',
-        dstRemote: _join(localName),
+      await TransferSession.run(
+        native: ref.read(nativeBridgeProvider),
+        title: '正在上传',
+        name: localName,
+        body: (report) async {
+          _setTransfer('正在上传 $localName', null);
+          await _client?.copyFile(
+            srcFs: localFs,
+            srcRemote: localName,
+            dstFs: '$_remote:',
+            dstRemote: _join(localName),
+            onJob: (jobId) => report(jobId: jobId),
+            onProgress: (percent, text) {
+              _setTransfer(text, percent);
+              report(percent: percent, text: text);
+            },
+          );
+        },
       );
       _toast('已上传 $localName');
       await _reload();
     } catch (e) {
       _toast('上传失败：$e');
+    } finally {
+      _setTransfer(null, null);
     }
+  }
+
+  void _setTransfer(String? text, int? percent) {
+    if (!mounted) return;
+    setState(() {
+      _transferText = text;
+      _transferPercent = percent;
+    });
   }
 
   Future<String?> _prompt(String title, String label) async {
@@ -207,7 +260,26 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
           ],
         ],
       ),
-      body: _remote == null
+      body: Column(
+        children: [
+          if (_transferText != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_transferText!, style: Theme.of(context).textTheme.bodySmall),
+                  const SizedBox(height: 6),
+                  LinearProgressIndicator(
+                    value: _transferPercent == null
+                        ? null
+                        : (_transferPercent!.clamp(0, 100) / 100),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: _remote == null
           ? remotes.isEmpty
               ? const Center(child: Text('还没有远程。请先添加网盘。'))
               : ListView(
@@ -261,6 +333,9 @@ class FileManagerScreenState extends ConsumerState<FileManagerScreen> {
                         },
                       ),
                     ),
+          ),
+        ],
+      ),
     );
   }
 }

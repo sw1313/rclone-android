@@ -65,13 +65,24 @@ class RcloneRcClient {
 
   Future<Map<String, dynamic>> callAsync(
     String method,
-    Map<String, dynamic> params,
-  ) async {
+    Map<String, dynamic> params, {
+    void Function(int? percent, String text)? onProgress,
+    void Function(int jobId)? onJob,
+  }) async {
     final started = await call(method, {...params, '_async': true});
-    final jobId = started['jobid'] ?? started['jobId'];
-    if (jobId == null) return started;
+    final rawId = started['jobid'] ?? started['jobId'];
+    if (rawId == null) return started;
+    final jobId = rawId is num ? rawId.toInt() : int.tryParse(rawId.toString());
+    if (jobId != null) onJob?.call(jobId);
+    final group = 'job/$jobId';
     for (var i = 0; i < 600; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (onProgress != null) {
+        try {
+          final progress = _progressFromStats(await call('core/stats', {'group': group}));
+          onProgress(progress.$1, progress.$2);
+        } catch (_) {}
+      }
       final status = await call('job/status', {'jobid': jobId});
       if (status['finished'] == true) {
         if (status['success'] == false) {
@@ -84,6 +95,41 @@ class RcloneRcClient {
       }
     }
     throw RcloneRcException('任务超时');
+  }
+
+  (int?, String) _progressFromStats(Map<String, dynamic> stats) {
+    final transferring = stats['transferring'];
+    if (transferring is List && transferring.isNotEmpty && transferring.first is Map) {
+      final item = (transferring.first as Map).cast<String, dynamic>();
+      final name = (item['name'] ?? '').toString();
+      final pct = (item['percentage'] as num?)?.toInt();
+      final bytes = _size(item['bytes']);
+      final size = _size(item['size']);
+      final text = [
+        if (name.isNotEmpty) name,
+        if (bytes != null && size != null) '$bytes / $size',
+      ].join(' · ');
+      return (pct, text.isEmpty ? '传输中' : text);
+    }
+    final bytes = (stats['bytes'] as num?)?.toInt() ?? 0;
+    final total = (stats['totalBytes'] as num?)?.toInt() ?? 0;
+    final pct = total > 0 ? ((bytes * 100) / total).round().clamp(0, 100) : null;
+    final text = total > 0 ? '${_size(bytes)} / ${_size(total)}' : '处理中…';
+    return (pct, text);
+  }
+
+  String? _size(Object? value) {
+    final n = value is num ? value.toInt() : int.tryParse(value?.toString() ?? '');
+    if (n == null || n < 0) return null;
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var size = n.toDouble();
+    var i = 0;
+    while (size >= 1024 && i < units.length - 1) {
+      size /= 1024;
+      i++;
+    }
+    final shown = size >= 10 || i == 0 ? size.round().toString() : size.toStringAsFixed(1);
+    return '$shown ${units[i]}';
   }
 
   Future<List<RemoteInfo>> listRemotes() async {
@@ -203,13 +249,20 @@ class RcloneRcClient {
     required String srcRemote,
     required String dstFs,
     required String dstRemote,
+    void Function(int? percent, String text)? onProgress,
+    void Function(int jobId)? onJob,
   }) async {
-    await callAsync('operations/copyfile', {
-      'srcFs': srcFs,
-      'srcRemote': srcRemote,
-      'dstFs': dstFs,
-      'dstRemote': dstRemote,
-    });
+    await callAsync(
+      'operations/copyfile',
+      {
+        'srcFs': srcFs,
+        'srcRemote': srcRemote,
+        'dstFs': dstFs,
+        'dstRemote': dstRemote,
+      },
+      onProgress: onProgress,
+      onJob: onJob,
+    );
   }
 
   Future<Map<String, dynamic>> version() => call('core/version');

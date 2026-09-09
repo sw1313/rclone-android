@@ -431,7 +431,7 @@ class NativeStatus {
 
   bool get canRealMount => rootAvailable && fusermountReady && rcloneReady;
 
-  bool get needsPermissionSetup => !hasAllFiles || !batteryIgnored;
+  bool get needsPermissionSetup => !hasAllFiles;
 
   NativeStatus copyWith({
     bool? rootAvailable,

@@ -1,9 +1,6 @@
 package com.rcloneandroid.rclone_android
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
-import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -12,7 +9,6 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
-import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -161,28 +157,19 @@ class WifiMonitor private constructor(context: Context) {
     }
 
     fun diagnose(): Map<String, Any?> {
-        val locationGranted = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
-            hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
-        val nearbyGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            hasPermission(Manifest.permission.NEARBY_WIFI_DEVICES)
-        } else {
-            true
-        }
-        val locationEnabled = isLocationEnabled()
         val ssid = currentSsid()
+        val wifiUp = isWifiAssociated()
         val hint = when {
             ssid != null -> "已识别 $ssid"
-            !locationEnabled -> "系统定位开关未打开，Android 读不到 WiFi 名称"
-            !locationGranted -> "未授予定位权限"
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !nearbyGranted -> "未授予附近的设备权限"
-            else -> "已连 WiFi 但系统未返回名称，请确认授予精确位置"
+            wifiUp -> "已连 WiFi"
+            else -> "未连接 WiFi"
         }
         return mapOf(
             "currentSsid" to ssid,
             "currentVpn" to currentVpnSummary(),
-            "locationGranted" to locationGranted,
-            "locationEnabled" to locationEnabled,
-            "nearbyWifiGranted" to nearbyGranted,
+            "locationGranted" to false,
+            "locationEnabled" to false,
+            "nearbyWifiGranted" to false,
             "wifiHint" to hint,
         )
     }
@@ -313,20 +300,6 @@ class WifiMonitor private constructor(context: Context) {
             }
         }
         return null
-    }
-
-    private fun hasPermission(permission: String): Boolean {
-        return ContextCompat.checkSelfPermission(app, permission) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun isLocationEnabled(): Boolean {
-        val lm = app.getSystemService(LocationManager::class.java) ?: return false
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            lm.isLocationEnabled
-        } else {
-            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
-        }
     }
 
     private fun rootSsid(): String? {
@@ -486,9 +459,6 @@ object WifiRuleEngine {
                 if (settings.optBoolean("preferRealMount", true) && RootShell.isAvailable()) {
                     profile.put("enabled", true)
                     RootMountManager.mount(profile)
-                } else {
-                    RcloneDaemon.start(RcloneApp.instance)
-                    EventHub.log("info", "无 Root，已按规则拉起 rclone 服务")
                 }
             } catch (e: Exception) {
                 EventHub.log("error", "按规则挂载失败: ${e.message}")
@@ -503,7 +473,7 @@ object WifiRuleEngine {
                 EventHub.log("error", "按规则卸载失败: ${e.message}")
             }
         }
-        RcloneService.refreshNotification()
+        ModuleRuntime.syncUi()
     }
 
     @Deprecated("use reconcile")

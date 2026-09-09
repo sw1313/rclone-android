@@ -47,7 +47,6 @@ object ModuleRuntime {
 
     fun syncUi() {
         RootMountManager.hydrate()
-        RcloneService.refreshNotification()
     }
 
     fun stopWatchdog() {

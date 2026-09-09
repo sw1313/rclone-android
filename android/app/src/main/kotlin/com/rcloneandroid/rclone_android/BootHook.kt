@@ -30,7 +30,7 @@ object BootHook {
         val enabled = BootStarter.isStartOnBoot(context)
         BootStarter.persistFlag(context, enabled)
         if (!RootShell.isAvailable()) {
-            EventHub.log("info", "无 Root，开机自启只能靠系统广播；小米请再打开「自启动」")
+            EventHub.log("info", "无 Root，不装看门狗。文件管理器只在传输时用通知栏进度条保活")
             return
         }
         if (!enabled) {

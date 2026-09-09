@@ -16,7 +16,6 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
     with WidgetsBindingObserver {
   bool _prompted = false;
   bool _notificationOk = false;
-  bool _locationOk = false;
 
   @override
   void initState() {
@@ -30,12 +29,8 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
 
   Future<void> _refreshRuntime() async {
     final notificationOk = await RuntimePermissions.notificationOk();
-    final locationOk = await RuntimePermissions.locationOk();
     if (!mounted) return;
-    setState(() {
-      _notificationOk = notificationOk;
-      _locationOk = locationOk;
-    });
+    setState(() => _notificationOk = notificationOk);
   }
 
   @override
@@ -68,32 +63,6 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
       );
       if (go == true && mounted) {
         await _run(native.openAllFilesSettings);
-      }
-    }
-
-    await ref.read(nativeStatusProvider.notifier).refresh();
-    if (!mounted) return;
-    if (!ref.read(nativeStatusProvider).batteryIgnored) {
-      final go = await _confirm(
-        title: '建议忽略电池优化',
-        body: '小米等系统会在后台杀掉前台服务，挂载会掉。接下来打开系统页，请把本应用设为「无限制」或不优化。',
-        action: '去设置',
-      );
-      if (go == true && mounted) {
-        await _run(native.requestIgnoreBattery);
-      }
-    }
-
-    await ref.read(nativeStatusProvider.notifier).refresh();
-    if (!mounted) return;
-    if (!ref.read(nativeStatusProvider).bootHookInstalled) {
-      final go = await _confirm(
-        title: '需要允许自启动',
-        body: '小米/HyperOS 默认拦截开机广播。请在安全中心允许本应用自启动。有 Root 时会安装 Magisk 模块「rclone 挂载看门狗」，挂载由模块按网络事件执行，可在 Magisk 里删除。',
-        action: '去允许',
-      );
-      if (go == true && mounted) {
-        await _run(native.openAutostartSettings);
       }
     }
   }
@@ -154,7 +123,7 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           Text(
-            '首次使用需要下面两项系统权限。点卡片会打开对应设置页。',
+            '必需要的是「所有文件访问」。真实挂载由 Magisk 看门狗执行，不必开省电或自启动。通知只在下载/上传时用来显示进度条。',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 12),
@@ -168,41 +137,15 @@ class _PermissionSetupPageState extends ConsumerState<PermissionSetupPage>
             onTap: () => _run(ref.read(nativeBridgeProvider).openAllFilesSettings),
           ),
           _PermissionCard(
-            icon: Icons.battery_saver_outlined,
-            title: '忽略电池优化',
-            subtitle: status.batteryIgnored
-                ? '已忽略'
-                : '挂载已改由 Magisk 看门狗负责；选「无限制」仍有助于通知栏',
-            granted: status.batteryIgnored,
-            onTap: () => _run(ref.read(nativeBridgeProvider).requestIgnoreBattery),
-          ),
-          _PermissionCard(
-            icon: Icons.restart_alt,
-            title: '允许自启动',
-            subtitle: status.bootHookInstalled
-                ? 'Magisk 看门狗已安装，挂载不依赖自启动'
-                : '无模块时小米不打开自启动，开机广播到不了',
-            granted: status.bootHookInstalled,
-            onTap: () => _run(ref.read(nativeBridgeProvider).openAutostartSettings),
-          ),
-          _PermissionCard(
             icon: Icons.notifications_outlined,
-            title: '通知',
-            subtitle: _notificationOk ? '已授予' : '前台服务保活需要通知权限',
+            title: '通知（传输时）',
+            subtitle: _notificationOk
+                ? '已授予，下载/上传会显示进度通知'
+                : '类似浏览器下载：只在传文件时保活，完成后消失',
             granted: _notificationOk,
+            optional: true,
             onTap: () async {
-              await RuntimePermissions.requestMissing();
-              await _refreshRuntime();
-            },
-          ),
-          _PermissionCard(
-            icon: Icons.location_on_outlined,
-            title: '定位 / 附近的设备',
-            subtitle: _locationOk ? '已授予' : '用来读取当前 WiFi 名称，做自动挂载',
-            granted: _locationOk,
-            onTap: () async {
-              await RuntimePermissions.requestMissing();
-              await ref.read(nativeStatusProvider.notifier).refresh();
+              await RuntimePermissions.requestNotification();
               await _refreshRuntime();
             },
           ),
@@ -225,21 +168,28 @@ class _PermissionCard extends StatelessWidget {
     required this.subtitle,
     required this.granted,
     required this.onTap,
+    this.optional = false,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final bool granted;
+  final bool optional;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final color = granted
+        ? scheme.primary
+        : optional
+            ? scheme.onSurfaceVariant
+            : scheme.error;
     return Card(
       clipBehavior: Clip.antiAlias,
       child: ListTile(
-        leading: Icon(icon, color: granted ? scheme.primary : scheme.error),
+        leading: Icon(icon, color: color),
         title: Text(title),
         subtitle: Text(subtitle),
         trailing: granted

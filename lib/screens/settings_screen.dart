@@ -77,8 +77,8 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: Text(
               settings.startOnBoot
                   ? (status.bootHookInstalled
-                      ? '已安装 Magisk 看门狗，按规则挂载/卸载，不依赖 App 保活。可在 Magisk 模块列表里删除'
-                      : '开机后台拉起服务，不打开界面。小米还需允许下方「自启动」')
+                      ? '已安装 Magisk 看门狗，按规则挂载/卸载，不拉起本应用'
+                      : '有 Root 时会安装 Magisk 看门狗，不会让本应用开机常驻')
                   : '关闭后会移除 Magisk 模块，重启后不再自动挂载',
             ),
             value: settings.startOnBoot,
@@ -88,17 +88,6 @@ class SettingsScreen extends ConsumerWidget {
                   );
               await ref.read(nativeStatusProvider.notifier).refresh();
             },
-          ),
-          ListTile(
-            leading: const Icon(Icons.restart_alt),
-            title: const Text('允许自启动'),
-            subtitle: Text(
-              status.bootHookInstalled
-                  ? 'Magisk 看门狗已就绪。也可在 Magisk 里删除「rclone 挂载看门狗」'
-                  : '小米/HyperOS 会拦截开机广播，请在安全中心允许本应用自启动',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _openSetting(context, ref, native.openAutostartSettings),
           ),
           SwitchListTile(
             title: const Text('按规则自动挂载/卸载'),
@@ -154,23 +143,6 @@ class SettingsScreen extends ConsumerWidget {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.battery_saver_outlined),
-            title: const Text('忽略电池优化'),
-            subtitle: Text(
-              status.batteryIgnored
-                  ? '已忽略，系统不易杀掉挂载服务'
-                  : '未忽略。小米请把省电策略设为「无限制」',
-            ),
-            trailing: status.batteryIgnored
-                ? const Icon(Icons.check_circle, color: Colors.green)
-                : const Icon(Icons.chevron_right),
-            onTap: () => _openSetting(
-              context,
-              ref,
-              native.requestIgnoreBattery,
-            ),
-          ),
-          ListTile(
             leading: const Icon(Icons.folder_open),
             title: const Text('所有文件访问权限'),
             subtitle: Text(
@@ -186,22 +158,17 @@ class SettingsScreen extends ConsumerWidget {
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.location_on_outlined),
-            title: const Text('定位 / 附近的设备'),
-            subtitle: Text(
-              status.locationGranted || status.nearbyWifiGranted
-                  ? '已授予，可读取 WiFi 名称'
-                  : 'Android 读取 WiFi 名称需要这些权限',
-            ),
-            trailing: status.locationGranted || status.nearbyWifiGranted
-                ? const Icon(Icons.check_circle, color: Colors.green)
-                : const Icon(Icons.chevron_right),
-            onTap: status.locationGranted || status.nearbyWifiGranted
-                ? null
-                : () async {
-                    await RuntimePermissions.requestMissing();
-                    await ref.read(nativeStatusProvider.notifier).refresh();
-                  },
+            leading: const Icon(Icons.notifications_outlined),
+            title: const Text('通知（传输进度）'),
+            subtitle: const Text('只在下载/上传时显示进度条，完成后消失。不给也能在应用内传输'),
+            onTap: () async {
+              await RuntimePermissions.requestNotification();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已请求通知权限')),
+                );
+              }
+            },
           ),
           ListTile(
             leading: const Icon(Icons.app_settings_alt),

@@ -4,20 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission
-        android:name="android.permission.NEARBY_WIFI_DEVICES"
-        tools:targetApi="tiramisu" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -59,32 +48,13 @@
         <service
             android:name=".RcloneService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keep rclone FUSE mounts and WiFi/VPN rules after reboot" />
-        </service>
-
-        <receiver
-            android:name=".BootReceiver"
-            android:exported="true"
-            android:enabled="true"
-            android:directBootAware="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
-                <action android:name="android.intent.action.USER_UNLOCKED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
-            </intent-filter>
-        </receiver>
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".NotificationActionReceiver"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.rcloneandroid.rclone_android.UNMOUNT_ALL" />
+                <action android:name="com.rcloneandroid.rclone_android.CANCEL_TRANSFER" />
             </intent-filter>
         </receiver>
 
@@ -107,25 +77,10 @@
             <data android:mimeType="text/plain" />
         </intent>
         <intent>
-            <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-        </intent>
-        <intent>
-            <action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" />
-        </intent>
-        <intent>
             <action android:name="android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION" />
         </intent>
         <intent>
             <action android:name="android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION" />
-        </intent>
-        <package android:name="com.miui.powerkeeper" />
-        <package android:name="com.miui.securitycenter" />
-        <intent>
-            <action android:name="miui.intent.action.OP_AUTO_START" />
-        </intent>
-        <package android:name="com.tailscale.ipn" />
-        <intent>
-            <action android:name="android.net.VpnService" />
         </intent>
     </queries>
 </manifest>

@@ -1,11 +1,9 @@
 package com.rcloneandroid.rclone_android
 
 import android.app.Activity
-import android.content.Intent
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -46,13 +44,47 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
     private fun handle(call: MethodCall): Any? {
         val paths = AppPaths(activity)
         return when (call.method) {
-            "prepareBinaries" -> BinaryInstaller.install(activity)
+            "prepareBinaries" -> {
+                val installed = BinaryInstaller.install(activity)
+                BootHook.sync(activity)
+                installed
+            }
             "getStatus" -> status()
-            "startService" -> {
-                RcloneService.start(activity)
+            "startRcd" -> RcloneDaemon.start(activity)
+            "beginTransfer" -> {
+                val id = call.argument<String>("id") ?: throw IllegalArgumentException("缺少 id")
+                RcloneService.begin(
+                    activity,
+                    id,
+                    call.argument<String>("title").orEmpty().ifBlank { "传输文件" },
+                    call.argument<String>("text").orEmpty(),
+                    call.argument<Int>("progress") ?: -1,
+                    call.argument<Int>("jobId"),
+                )
                 true
             }
-            "startRcd" -> RcloneDaemon.start(activity)
+            "updateTransfer" -> {
+                val id = call.argument<String>("id") ?: throw IllegalArgumentException("缺少 id")
+                RcloneService.update(
+                    activity,
+                    id,
+                    text = call.argument<String>("text"),
+                    title = call.argument<String>("title"),
+                    progress = call.argument<Int>("progress"),
+                    jobId = call.argument<Int>("jobId"),
+                )
+                true
+            }
+            "endTransfer" -> {
+                val id = call.argument<String>("id") ?: throw IllegalArgumentException("缺少 id")
+                RcloneService.end(
+                    activity,
+                    id,
+                    call.argument<Boolean>("success") ?: true,
+                    call.argument<String>("text").orEmpty(),
+                )
+                true
+            }
             "stopRcd" -> {
                 RcloneDaemon.stop()
                 true
@@ -78,16 +110,8 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
                 WifiMonitor.get(activity).start()
                 true
             }
-            "requestIgnoreBattery" -> onMain { SettingsIntents.ignoreBattery(activity) }
             "openAllFilesSettings" -> onMain { SettingsIntents.allFilesAccess(activity) }
-            "openLocationSettings" -> onMain {
-                activity.startActivity(
-                    Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-                true
-            }
             "openAppSettings" -> onMain { SettingsIntents.appDetails(activity) }
-            "openAutostartSettings" -> onMain { SettingsIntents.autostart(activity) }
             "moveTaskToBack" -> onMain {
                 activity.moveTaskToBack(true)
                 true
@@ -154,7 +178,6 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
             "mounted" to RootMountManager.listRecords(),
             "serviceRunning" to RcloneService.isRunning(),
             "hasAllFiles" to SettingsIntents.hasAllFiles(),
-            "batteryIgnored" to SettingsIntents.isIgnoringBattery(activity),
             "bootHookInstalled" to BootHook.isInstalled(),
             "rcloneVersion" to rcloneVersion(paths),
         ).apply { putAll(daemon) }
