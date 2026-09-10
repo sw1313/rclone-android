@@ -264,6 +264,10 @@ detect_events() {
   for n in $last_vpn; do
     [ -n "$n" ] || continue
     echo "$CUR_VPN" | tr ' ' '\n' | grep -qxF "$n" && continue
+    # 旧版只记下 tun0，升级后改记包名，不能当成 VPN 断开
+    if is_generic_vpn_iface "$n" && [ -n "$CUR_VPN" ]; then
+      continue
+    fi
     echo "vpn|disconnect|$n" >> "$MODDIR/work.events"
   done
 }

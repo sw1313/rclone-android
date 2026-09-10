@@ -113,7 +113,7 @@ class NativeBridge(private val activity: Activity) : MethodChannel.MethodCallHan
             }
             "listMounted" -> RootMountManager.listRecords()
             "getCurrentSsid" -> WifiMonitor.get(activity).currentSsid()
-            "getCurrentVpn" -> WifiMonitor.get(activity).currentVpnSummary()
+            "getCurrentVpn" -> WifiMonitor.get(activity).currentVpnRuleToken()
             "startWifiMonitor" -> {
                 WifiMonitor.get(activity).start()
                 true

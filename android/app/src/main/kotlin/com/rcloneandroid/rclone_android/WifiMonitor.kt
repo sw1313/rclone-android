@@ -18,8 +18,14 @@ data class VpnInfo(
     val label: String?,
 ) {
     val keys: List<String> get() = listOfNotNull(packageName, label, iface)
+    val identityKeys: List<String>
+        get() {
+            val named = listOfNotNull(packageName, label).filter { it.isNotBlank() }
+            return named.ifEmpty { listOfNotNull(iface) }
+        }
     val preferred: String get() = label ?: packageName ?: iface ?: "vpn"
-    val fingerprint: String get() = keys.joinToString("|").ifBlank { preferred }
+    val ruleToken: String get() = packageName ?: label ?: iface ?: "vpn"
+    val fingerprint: String get() = identityKeys.joinToString("|").ifBlank { preferred }
 }
 
 @Suppress("DEPRECATION")
@@ -112,28 +118,16 @@ class WifiMonitor private constructor(context: Context) {
     }
 
     fun currentVpns(): List<VpnInfo> {
-        val out = mutableListOf<VpnInfo>()
-        for (network in cm.allNetworks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
-            val iface = cm.getLinkProperties(network)?.interfaceName
-            var pkg: String? = null
-            var label: String? = null
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val uid = caps.ownerUid
-                if (uid > 0) {
-                    pkg = runCatching { app.packageManager.getPackagesForUid(uid)?.firstOrNull() }.getOrNull()
-                    if (pkg != null) {
-                        label = runCatching {
-                            val info = app.packageManager.getApplicationInfo(pkg, 0)
-                            app.packageManager.getApplicationLabel(info).toString()
-                        }.getOrNull()
-                    }
-                }
-            }
-            out += VpnInfo(iface, pkg, label)
+        val api = apiVpns()
+        val root = rootVpns()
+        if (root.isNotEmpty()) {
+            return root.map { info ->
+                val hit = api.firstOrNull { !it.iface.isNullOrBlank() && it.iface == info.iface }
+                val pkg = info.packageName ?: hit?.packageName
+                VpnInfo(info.iface ?: hit?.iface, pkg, labelOf(pkg) ?: hit?.label ?: info.label)
+            }.distinctBy { it.fingerprint }
         }
-        return out.distinctBy { it.fingerprint }
+        return api
     }
 
     fun isWifiAssociated(): Boolean {
@@ -153,7 +147,13 @@ class WifiMonitor private constructor(context: Context) {
     fun currentVpnSummary(): String? {
         val vpns = currentVpns()
         if (vpns.isEmpty()) return null
-        return vpns.joinToString("、") { it.preferred }
+        return vpns.joinToString("、") { vpn ->
+            listOfNotNull(vpn.label, vpn.packageName, vpn.iface).distinct().joinToString(" / ")
+        }
+    }
+
+    fun currentVpnRuleToken(): String? {
+        return currentVpns().firstOrNull()?.ruleToken
     }
 
     fun diagnose(): Map<String, Any?> {
@@ -244,32 +244,94 @@ class WifiMonitor private constructor(context: Context) {
     }
 
     private fun onVpnLost(network: Network) {
+        rootVpnAt = 0L
+        rootVpnCache = emptyList()
         val old = vpnTracks.remove(network) ?: return
         lastVpns = lastVpns - old.fingerprint
         EventHub.log("info", "VPN 已断开: ${old.preferred}")
         EventHub.emit(mapOf("type" to "vpn", "event" to "disconnect", "vpn" to old.preferred))
-        WifiRuleEngine.requestReconcile(app, "VPN 已断开", NetEvent("vpn", "disconnect", old.preferred, old.keys))
+        WifiRuleEngine.requestReconcile(app, "VPN 已断开", NetEvent("vpn", "disconnect", old.preferred, old.identityKeys))
     }
 
     private fun rememberVpn(network: Network, info: VpnInfo) {
-        val prev = vpnTracks.put(network, info)
+        val merged = mergeRoot(info)
+        val prev = vpnTracks.put(network, merged)
         if (prev != null) {
-            lastVpns = lastVpns - prev.fingerprint + info.fingerprint
+            lastVpns = lastVpns - prev.fingerprint + merged.fingerprint
             return
         }
-        if (info.fingerprint in lastVpns) return
-        lastVpns = lastVpns + info.fingerprint
-        EventHub.log("info", "VPN 已连接: ${info.preferred}")
+        if (merged.fingerprint in lastVpns) return
+        lastVpns = lastVpns + merged.fingerprint
+        EventHub.log("info", "VPN 已连接: ${merged.preferred}")
         EventHub.emit(
             mapOf(
                 "type" to "vpn",
                 "event" to "connect",
-                "vpn" to info.preferred,
-                "package" to info.packageName,
-                "iface" to info.iface,
+                "vpn" to merged.preferred,
+                "package" to merged.packageName,
+                "iface" to merged.iface,
             ),
         )
-        WifiRuleEngine.requestReconcile(app, "VPN 已连接", NetEvent("vpn", "connect", info.preferred, info.keys))
+        WifiRuleEngine.requestReconcile(app, "VPN 已连接", NetEvent("vpn", "connect", merged.preferred, merged.identityKeys))
+    }
+
+    private fun mergeRoot(info: VpnInfo): VpnInfo {
+        val root = rootVpns().firstOrNull() ?: return info
+        val pkg = info.packageName ?: root.packageName
+        return VpnInfo(info.iface ?: root.iface, pkg, labelOf(pkg) ?: info.label ?: root.label)
+    }
+
+    private var rootVpnAt = 0L
+    private var rootVpnCache: List<VpnInfo> = emptyList()
+
+    private fun apiVpns(): List<VpnInfo> {
+        val out = mutableListOf<VpnInfo>()
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            val iface = cm.getLinkProperties(network)?.interfaceName
+            var pkg: String? = null
+            var label: String? = null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val uid = caps.ownerUid
+                if (uid > 0) {
+                    pkg = runCatching { app.packageManager.getPackagesForUid(uid)?.firstOrNull() }.getOrNull()
+                    label = labelOf(pkg)
+                }
+            }
+            out += VpnInfo(iface, pkg, label)
+        }
+        return out.distinctBy { it.fingerprint }
+    }
+
+    private fun rootVpns(): List<VpnInfo> {
+        if (!RootShell.isAvailable()) return emptyList()
+        val now = System.currentTimeMillis()
+        if (now - rootVpnAt < 800) return rootVpnCache
+        val dump = RootShell.exec("dumpsys vpn_management", log = false).out.joinToString("\n")
+        val ifaces = RootShell.exec(
+            "ls /sys/class/net 2>/dev/null | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+\$|^tailscale[0-9]*\$'",
+            log = false,
+        ).out.map { it.trim() }.filter { it.isNotEmpty() }
+        val pkg = Regex("""Active package name:\s*(\S+)""").find(dump)?.groupValues?.get(1)
+            ?: Regex("""^\s*\d+:\s*(\S+)""", RegexOption.MULTILINE).find(dump)?.groupValues?.get(1)
+        val type = Regex("""Active vpn type:\s*(-?\d+)""").find(dump)?.groupValues?.get(1)
+        val connected = ifaces.isNotEmpty() || (type != null && type != "-1")
+        rootVpnAt = now
+        rootVpnCache = if (!connected) {
+            emptyList()
+        } else {
+            listOf(VpnInfo(ifaces.firstOrNull(), pkg?.takeIf { it.isNotBlank() }, labelOf(pkg)))
+        }
+        return rootVpnCache
+    }
+
+    private fun labelOf(pkg: String?): String? {
+        if (pkg.isNullOrBlank()) return null
+        return runCatching {
+            val info = app.packageManager.getApplicationInfo(pkg, 0)
+            app.packageManager.getApplicationLabel(info).toString()
+        }.getOrNull()
     }
 
     private fun vpnFromCaps(caps: NetworkCapabilities, old: VpnInfo?): VpnInfo {
@@ -578,7 +640,7 @@ object WifiRuleEngine {
         }
         val needle = expected.lowercase()
         return vpns.any { vpn ->
-            vpn.keys.any { it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase()) }
+            vpn.identityKeys.any { it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase()) }
         }
     }
 

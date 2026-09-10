@@ -1,6 +1,6 @@
 id=rclone-android
 name=rclone 挂载看门狗
-version=v3
-versionCode=3
+version=v4
+versionCode=4
 author=rclone-android
-description=由 Magisk 进程按 WiFi/VPN 规则挂载和卸载，不依赖 App 保活。可在模块列表里删除；卸载应用后也会自动消失。
+description=由 Magisk 进程按 WiFi/VPN 规则挂载和卸载，不依赖 App 保活。VPN 按应用包名区分。可在模块列表里删除；卸载应用后也会自动消失。

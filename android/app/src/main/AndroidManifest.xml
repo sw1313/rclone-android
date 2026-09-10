@@ -86,5 +86,10 @@
         <intent>
             <action android:name="android.settings.APP_NOTIFICATION_SETTINGS" />
         </intent>
+        <intent>
+            <action android:name="android.net.VpnService" />
+        </intent>
+        <package android:name="com.tailscale.ipn" />
+        <package android:name="com.follow.clash" />
     </queries>
 </manifest>

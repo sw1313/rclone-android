@@ -81,15 +81,79 @@ wifi_associated() {
   return 1
 }
 
-vpn_names() {
+vpn_ifaces() {
+  # tunl0 是内核 IPIP，不是 VpnService
   if [ -d /sys/class/net ]; then
-    ls /sys/class/net | grep -E '^(tun|tap|wg|tailscale|ppp|utun)[0-9]*$' 2>/dev/null
+    ls /sys/class/net | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+$|^tailscale[0-9]*$' 2>/dev/null
   fi
 }
 
+is_generic_vpn_iface() {
+  case "$1" in
+    tun[0-9]*|tap[0-9]*|wg[0-9]*|ppp[0-9]*|utun[0-9]*|tailscale*) return 0 ;;
+  esac
+  return 1
+}
+
+vpn_dump_pkg() {
+  dump=$(dumpsys vpn_management 2>/dev/null) || return 0
+  [ -n "$dump" ] || return 0
+  type=$(printf '%s\n' "$dump" | sed -n 's/^[[:space:]]*Active vpn type: //p' | head -n 1)
+  pkg=$(printf '%s\n' "$dump" | sed -n 's/^[[:space:]]*Active package name: //p' | head -n 1)
+  [ -n "$pkg" ] || pkg=$(printf '%s\n' "$dump" | sed -n 's/^[[:space:]]*[0-9][0-9]*: //p' | head -n 1)
+  iface=$(vpn_ifaces | head -n 1)
+  # type -1 = 当前没走 VpnService；有 tun 时仍用已登记的包名区分是谁建的
+  if [ -z "$iface" ]; then
+    case "$type" in
+      ""|-1) return 0 ;;
+    esac
+  fi
+  [ -n "$pkg" ] || [ -n "$iface" ] || return 0
+  printf '%s\t%s\n' "$pkg" "$iface"
+}
+
+vpn_alias_names() {
+  pkg=$1
+  [ -n "$pkg" ] || return 0
+  if [ -f "$EXPORT/vpn_aliases" ]; then
+    while IFS='|' read -r p label; do
+      [ "$p" = "$pkg" ] || continue
+      [ -n "$label" ] && printf '%s\n' "$label"
+    done < "$EXPORT/vpn_aliases"
+  fi
+  case "$pkg" in
+    com.tailscale.ipn) printf '%s\n' Tailscale ;;
+    com.follow.clash) printf '%s\n' FlClash Clash ;;
+  esac
+}
+
+vpn_names() {
+  rec=$(vpn_dump_pkg)
+  if [ -n "$rec" ]; then
+    pkg=$(printf '%s' "$rec" | cut -f1)
+    iface=$(printf '%s' "$rec" | cut -f2)
+    if [ -n "$pkg" ]; then
+      printf '%s\n' "$pkg"
+      vpn_alias_names "$pkg"
+      return 0
+    fi
+    [ -n "$iface" ] && printf '%s\n' "$iface"
+    return 0
+  fi
+  vpn_ifaces
+}
+
 vpn_text() {
-  names=$(vpn_names | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-  [ -n "$names" ] && printf '%s' "$names" || printf '%s' ""
+  rec=$(vpn_dump_pkg)
+  pkg=$(printf '%s' "$rec" | cut -f1)
+  iface=$(printf '%s' "$rec" | cut -f2)
+  if [ -n "$pkg" ]; then
+    printf '%s' "$pkg"
+  elif [ -n "$iface" ]; then
+    printf '%s' "$iface"
+  else
+    vpn_ifaces | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+  fi
 }
 
 match_token() {
@@ -173,12 +237,15 @@ vpn_clause() {
     if [ -z "$t" ] || [ "$t" = "*" ] || [ "$t" = "any" ] || [ "$t" = "vpn" ]; then
       matched=1
     else
-      for n in $(vpn_names); do
+      while IFS= read -r n; do
+        [ -n "$n" ] || continue
         if match_token "$target" "$n"; then
           matched=1
           break
         fi
-      done
+      done <<EOF
+$(vpn_names)
+EOF
     fi
   fi
   if [ "$trigger" = "disconnect" ]; then

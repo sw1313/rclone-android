@@ -6,7 +6,7 @@
 
 ## 安装
 
-到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.7**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
+到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.8**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
 
 需要：
 
@@ -25,7 +25,8 @@
 - 首页开关：按实际 `/proc/mounts` 显示是否已挂载
 - 自动规则：
   - 仅 WiFi / 仅 VPN：按**当前**是否连着判断，开机后也会核对
-  - **前提状态 + 触发器**：例如家里 WiFi 已经断开后，再开/关 VPN（如 Tailscale 的 `tun0`）才挂上或卸掉，不靠「两边碰巧同时满足」
+  - **前提状态 + 触发器**：例如家里 WiFi 已经断开后，再开/关某个 VPN 应用才挂上或卸掉，不靠「两边碰巧同时满足」
+  - VPN 按系统登记的**应用包名**区分（Clash、Tailscale 的磁贴开关也算，不看应用是否在前台）。规则请填应用名或包名，例如 `Tailscale` / `com.tailscale.ipn`；不要填 `tun0`，多家 VPN 都会建成这个网卡名。只登记过、还没连上的不算已连接
 - 开机自启 / 看门狗：有 Root 时写入 Magisk 模块「rclone 挂载看门狗」。挂载和卸载由模块进程完成，不依赖 App 保活。可在 Magisk 模块列表里删除；卸载本应用后模块也会自行消失
 - 系统返回不会退出应用：文件页先回上级，其他页先回挂载页，首页退到后台
 - 网断了也可以进应用，用懒卸载关掉挂载，避免卡死
@@ -62,14 +63,14 @@ rclone 与 fusermount 体积较大，默认不进 Git。构建前必须先跑下
 看门狗按**网络事件**工作，不是定时轮询：
 
 - App 在时：用系统 `NetworkCallback` 收 WiFi / VPN 变化，再通知模块执行
-- App 被冻或被杀时：模块用 `inotifyd` 监听 `/data/misc/net`（路由表变化），例如开关 WiFi、Tailscale 拉起 `tun0`
+- App 被冻或被杀时：模块用 `inotifyd` 监听 `/data/misc/net`（路由表变化），例如开关 WiFi、用磁贴打开 Tailscale
 - 单条件规则按当前状态执行，所以家里 WiFi 还连着但挂载进程没了，会补挂
 - 组合规则必须「前提已成立 + 触发器边沿」，开机或定时核对本身不会误触发
 - 本应用不再常驻前台服务。通知栏常驻显示已挂载或尚未挂载；文件传输才短暂拉起 `dataSync` 进度通知，传完即停
 
 模块路径为 `/data/adb/modules/rclone-android`。不想后台挂载时，可在 Magisk 里删除该模块，或在应用设置里关掉「开机自启」。
 
-VPN 须是系统 `VpnService` 建出的接口（例如 Tailscale 的 `tun0`）。用 `ip link add` 假造的网卡不会进 Android 路由表，看门狗也收不到。
+VPN 须是系统 `VpnService`（Tailscale、Clash 等）。看门狗用 `dumpsys vpn_management` 读当前活动包名来区分是哪一个，网卡名只作旁证。用 `ip link add` 假造的网卡不会进 Android 路由表，看门狗也收不到。
 
 ## 许可证
 

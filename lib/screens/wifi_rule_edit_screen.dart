@@ -152,7 +152,7 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
           decoration: InputDecoration(
             labelText: 'VPN 名称 / 包名 / *',
             hintText: '* 表示任意 VPN',
-            helperText: '当前：${status.currentVpn ?? '无'}',
+            helperText: '当前：${status.currentVpn ?? '无'}。点右侧写入包名；也可填应用名。不要填 tun0',
             border: const OutlineInputBorder(),
             suffixIcon: IconButton(
               tooltip: '使用当前 VPN',

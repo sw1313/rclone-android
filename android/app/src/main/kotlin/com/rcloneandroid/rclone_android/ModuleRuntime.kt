@@ -1,6 +1,9 @@
 package com.rcloneandroid.rclone_android
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -80,6 +83,7 @@ object ModuleRuntime {
         line(state, "prefer_real_mount", yn(settings.optBoolean("preferRealMount", true)))
         line(state, "start_on_boot", yn(BootStarter.isStartOnBoot(context)))
         File(exportDir, "state.conf").writeText(state.toString())
+        writeVpnAliases(exportDir, context)
 
         val mounts = readArray(paths.mountsFile)
         for (i in 0 until mounts.length()) {
@@ -146,6 +150,29 @@ object ModuleRuntime {
             line(text, "profiles", joined)
             File(ruleDir, "$id.conf").writeText(text.toString())
         }
+    }
+
+    private fun writeVpnAliases(exportDir: File, context: Context) {
+        val pm = context.packageManager
+        val intent = Intent("android.net.VpnService")
+        val services = if (Build.VERSION.SDK_INT >= 33) {
+            pm.queryIntentServices(intent, PackageManager.ResolveInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.queryIntentServices(intent, 0)
+        }
+        val rows = linkedMapOf<String, String>()
+        for (info in services) {
+            val pkg = info.serviceInfo?.packageName?.trim().orEmpty()
+            if (pkg.isEmpty()) continue
+            val label = runCatching {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            }.getOrNull()?.trim().orEmpty()
+            if (label.isNotEmpty()) rows[pkg] = label
+        }
+        File(exportDir, "vpn_aliases").writeText(
+            rows.entries.joinToString("\n") { "${it.key}|${it.value}" }.plus('\n'),
+        )
     }
 
     private fun line(out: StringBuilder, key: String, value: String) {
