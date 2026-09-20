@@ -11,14 +11,14 @@ esac
 MODDIR=/data/adb/modules/rclone-android
 [ -f "$MODDIR/watchdog.sh" ] || exit 0
 
-# 一次连/断网会连写路由表，合并成事件结束后的一次 tick
+# 一次连/断网会连写路由表。box_for_magisk 用 3 秒稳定窗，再决定 start 或 stop
 stamp=$MODDIR/inotify.followup
 if [ -f "$stamp" ]; then
   exit 0
 fi
 echo $$ > "$stamp"
 (
-  sleep 1
+  sleep 3
   rm -f "$stamp"
   sh "$MODDIR/watchdog.sh" tick >/dev/null 2>&1
 ) &

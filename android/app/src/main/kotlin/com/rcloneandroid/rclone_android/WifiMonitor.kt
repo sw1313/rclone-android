@@ -104,6 +104,9 @@ class WifiMonitor private constructor(context: Context) {
     }
 
     fun currentSsid(androidOnly: Boolean = false): String? {
+        if (!androidOnly) {
+            rootSsid()?.let { return it }
+        }
         val active = cm.activeNetwork
         ssidFromNetwork(active, cm.getNetworkCapabilities(active))?.let { return it }
         for (network in cm.allNetworks) {
@@ -114,7 +117,7 @@ class WifiMonitor private constructor(context: Context) {
             sanitize(wm.connectionInfo?.ssid)?.let { return it }
         } catch (_: Exception) {
         }
-        return if (androidOnly) null else rootSsid()
+        return null
     }
 
     fun currentVpns(): List<VpnInfo> {
@@ -131,17 +134,9 @@ class WifiMonitor private constructor(context: Context) {
     }
 
     fun isWifiAssociated(): Boolean {
-        if (currentSsid() != null) return true
-        for (network in cm.allNetworks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return true
-        }
-        try {
-            val info = app.getSystemService(WifiManager::class.java).connectionInfo
-            if (info != null && info.networkId != -1) return true
-        } catch (_: Exception) {
-        }
-        return rootWifiUp()
+        if (RootShell.isAvailable() && rootWifiUp()) return true
+        if (currentSsid(androidOnly = true) != null) return true
+        return false
     }
 
     fun currentVpnSummary(): String? {
@@ -200,9 +195,9 @@ class WifiMonitor private constructor(context: Context) {
         if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
         wifiNets += network
         val ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            sanitize((caps.transportInfo as? WifiInfo)?.ssid)
+            sanitize((caps.transportInfo as? WifiInfo)?.ssid) ?: rootSsid()
         } else {
-            null
+            rootSsid()
         }
         if (lastWifiUp && (ssid == null || ssid == lastSsid)) {
             if (ssid != null) lastSsid = ssid
@@ -310,7 +305,7 @@ class WifiMonitor private constructor(context: Context) {
         if (now - rootVpnAt < 800) return rootVpnCache
         val dump = RootShell.exec("dumpsys vpn_management", log = false).out.joinToString("\n")
         val ifaces = RootShell.exec(
-            "ls /sys/class/net 2>/dev/null | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+\$|^tailscale[0-9]*\$'",
+            "ls /sys/class/net 2>/dev/null | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+\$|^tailscale[0-9]+\$'",
             log = false,
         ).out.map { it.trim() }.filter { it.isNotEmpty() }
         val pkg = Regex("""Active package name:\s*(\S+)""").find(dump)?.groupValues?.get(1)
@@ -366,33 +361,23 @@ class WifiMonitor private constructor(context: Context) {
 
     private fun rootSsid(): String? {
         if (!RootShell.isAvailable()) return null
-        val result = RootShell.exec(
-            """
-            for d in wlan0 wlan1 wifi0; do
-              s=${'$'}(iw dev ${'$'}d link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
-              [ -z "${'$'}s" ] && s=${'$'}(iw ${'$'}d link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
-              [ -n "${'$'}s" ] && echo "${'$'}s" && exit 0
-            done
-            exit 1
-            """.trimIndent(),
-            log = false,
-        )
+        val script = if (BootHook.isInstalled()) {
+            ". ${ModuleRuntime.MOD_DIR}/common.sh && current_ssid"
+        } else {
+            """cmd wifi status 2>/dev/null | sed -n 's/^Wifi is connected to "\(.*\)"${'$'}/\1/p' | head -n 1"""
+        }
+        val result = RootShell.exec(script, log = false)
         return sanitize(result.out.firstOrNull())
     }
 
     private fun rootWifiUp(): Boolean {
         if (!RootShell.isAvailable()) return false
-        val result = RootShell.exec(
-            """
-            for d in wlan0 wlan1 wifi0; do
-              iw dev ${'$'}d link 2>/dev/null | grep -q '^Connected' && exit 0
-              iw ${'$'}d link 2>/dev/null | grep -q '^Connected' && exit 0
-            done
-            exit 1
-            """.trimIndent(),
-            log = false,
-        )
-        return result.isSuccess
+        val script = if (BootHook.isInstalled()) {
+            ". ${ModuleRuntime.MOD_DIR}/common.sh && wifi_associated"
+        } else {
+            """cmd wifi status 2>/dev/null | grep -q '^Wifi is connected to "'"""
+        }
+        return RootShell.exec(script, log = false).isSuccess
     }
 
     private fun sanitize(raw: String?): String? {
@@ -594,20 +579,18 @@ object WifiRuleEngine {
 
     private fun eventMatches(kind: String, target: String, event: NetEvent): Boolean {
         val expected = target.trim()
-        if (expected.isEmpty() || expected == "*" || expected.equals("any", true) || expected.equals("vpn", true)) {
+        if (expected == "*" || expected.equals("any", true)) {
             return true
         }
+        if (expected.isEmpty()) return false
         if (kind.equals("wifi", true)) {
             return expected.equals(event.target, ignoreCase = true)
         }
-        val needle = expected.lowercase()
-        return (event.keys + event.target).any {
-            it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase())
-        }
+        return vpnNeedleHits(expected, event.keys + event.target)
     }
 
     private fun evalWifi(trigger: String, target: String, ssid: String?, wifiUp: Boolean): ClauseVerdict {
-        val any = target.isBlank() || target == "*" || target.equals("any", true)
+        val any = target == "*" || target.equals("any", true)
         val matched = if (any) wifiUp else currentlyMatches("wifi", target, ssid, emptyList())
         val known = if (any) true else !wifiUp || !ssid.isNullOrBlank()
         val active = if (trigger.equals("disconnect", true)) !matched && known else matched
@@ -617,9 +600,9 @@ object WifiRuleEngine {
     }
 
     private fun evalVpn(trigger: String, target: String, vpns: List<VpnInfo>): ClauseVerdict {
-        val matched = currentlyMatches("vpn", target.ifBlank { "*" }, null, vpns)
+        val matched = currentlyMatches("vpn", target, null, vpns)
         val active = if (trigger.equals("disconnect", true)) !matched else matched
-        val name = if (target.isBlank() || target == "*") "任意 VPN" else target
+        val name = if (target == "*" || target.equals("any", true)) "任意 VPN" else target
         val whenText = if (trigger.equals("disconnect", true)) "未连接" else "已连接"
         return ClauseVerdict(active, true, "VPN $name $whenText")
     }
@@ -635,12 +618,20 @@ object WifiRuleEngine {
         }
         val expected = ruleTarget.trim()
         if (vpns.isEmpty()) return false
-        if (expected.isEmpty() || expected == "*" || expected.equals("any", true) || expected.equals("vpn", true)) {
+        if (expected == "*" || expected.equals("any", true)) {
             return true
         }
-        val needle = expected.lowercase()
-        return vpns.any { vpn ->
-            vpn.identityKeys.any { it.contains(needle, ignoreCase = true) || needle.contains(it.lowercase()) }
+        if (expected.isEmpty()) return false
+        return vpns.any { vpn -> vpnNeedleHits(expected, vpn.identityKeys) }
+    }
+
+    private fun vpnNeedleHits(needle: String, keys: List<String>): Boolean {
+        val need = needle.trim().lowercase()
+        if (need.isEmpty()) return false
+        if (need.matches(Regex("""^(tun|tap|wg|ppp|utun)\d+$|^tailscale\d+$"""))) return false
+        return keys.any { key ->
+            val item = key.lowercase()
+            item == need || item.contains(need)
         }
     }
 

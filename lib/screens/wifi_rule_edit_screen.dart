@@ -84,18 +84,26 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
   }
 
   Future<void> _save() async {
-    if (_usesWifi && _ssid.text.trim().isEmpty) {
-      _ssid.text = '*';
+    final ssid = _ssid.text.trim();
+    final vpnName = _vpnName.text.trim();
+    if (_usesWifi && ssid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请填写 WiFi 名称。只有确实要匹配任意网络时才填 *')),
+      );
+      return;
     }
-    if (_usesVpn && _vpnName.text.trim().isEmpty) {
-      _vpnName.text = '*';
+    if (_usesVpn && vpnName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请填写 VPN 应用名或包名，例如 Tailscale。填 * 会把 Clash 也算进去')),
+      );
+      return;
     }
     final rule = WifiRule(
       id: widget.existing?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
       kind: _kind,
-      ssid: _kind == 'vpn' ? _vpnName.text.trim() : _ssid.text.trim(),
+      ssid: _kind == 'vpn' ? vpnName : ssid,
       trigger: _kind == 'vpn' ? _vpnTrigger : _wifiTrigger,
-      vpnName: _usesVpn ? _vpnName.text.trim() : '',
+      vpnName: _usesVpn ? vpnName : '',
       vpnTrigger: _usesVpn ? _vpnTrigger : 'connect',
       triggerSource: _kind == 'both' ? _triggerSource : _kind,
       action: _action,
@@ -214,7 +222,7 @@ class _WifiRuleEditScreenState extends ConsumerState<WifiRuleEditScreen> {
             }),
             decoration: const InputDecoration(
               labelText: '规则类型',
-              helperText: '「前提 + 触发器」例如：WiFi 已断开时，再开启或关闭 VPN 才执行',
+              helperText: '组合条件按当前状态判断：指定 WiFi 已断开且指定 VPN 已连接才挂。开别的 VPN 不会命中',
               border: OutlineInputBorder(),
             ),
           ),

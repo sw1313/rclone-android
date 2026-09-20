@@ -9,6 +9,17 @@ load_paths
 
 LOCK=$MODDIR/lock.d
 
+lock_holder_alive() {
+  old=$(cat "$LOCK/pid" 2>/dev/null)
+  [ -n "$old" ] || return 1
+  [ -d "/proc/$old" ] || return 1
+  cmd=$(tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null)
+  case "$cmd" in
+    *watchdog.sh*) return 0 ;;
+  esac
+  return 1
+}
+
 acquire() {
   n=0
   while [ $n -lt 40 ]; do
@@ -16,8 +27,15 @@ acquire() {
       echo $$ > "$LOCK/pid"
       return 0
     fi
-    old=$(cat "$LOCK/pid" 2>/dev/null)
-    if [ -n "$old" ] && [ ! -d "/proc/$old" ]; then
+    if ! lock_holder_alive; then
+      log "清掉过期锁 pid=$(cat "$LOCK/pid" 2>/dev/null)"
+      rm -rf "$LOCK"
+      continue
+    fi
+    now=$(date +%s 2>/dev/null || echo 0)
+    mt=$(stat -c %Y "$LOCK" 2>/dev/null || echo 0)
+    if [ "$now" -gt 0 ] && [ "$mt" -gt 0 ] && [ $((now - mt)) -gt 120 ]; then
+      log "锁超过 120 秒，强制解开"
       rm -rf "$LOCK"
       continue
     fi
@@ -227,8 +245,14 @@ event_hit() {
   while IFS='|' read -r ek ec et; do
     [ "$ek" = "$kind" ] || continue
     [ "$ec" = "$change" ] || continue
-    if match_token "$target" "$et"; then
-      return 0
+    if [ "$kind" = "wifi" ]; then
+      if is_any_token "$target" || match_ssid "$target" "$et"; then
+        return 0
+      fi
+    else
+      if is_any_token "$target" || match_vpn "$target" "$et"; then
+        return 0
+      fi
     fi
   done < "$MODDIR/work.events"
   return 1
@@ -243,14 +267,16 @@ detect_events() {
   last_ssid=$(cat "$MODDIR/last_ssid" 2>/dev/null || true)
   last_vpn=$(cat "$MODDIR/last_vpn" 2>/dev/null || true)
   last_up=$(cat "$MODDIR/last_wifi_up" 2>/dev/null || true)
-  if [ -n "$CUR_SSID" ] && [ "$CUR_SSID" != "$last_ssid" ]; then
+  if [ "$WIFI_UP" -eq 1 ] && [ -z "$CUR_SSID" ]; then
+    # 已关联但读不到名字：不造 wifi 边沿，避免 MLO/切换瞬间误挂误卸
+    :
+  elif [ -n "$CUR_SSID" ] && [ "$CUR_SSID" != "$last_ssid" ]; then
     echo "wifi|connect|$CUR_SSID" >> "$MODDIR/work.events"
     [ -n "$last_ssid" ] && echo "wifi|disconnect|$last_ssid" >> "$MODDIR/work.events"
-  fi
-  if [ -z "$CUR_SSID" ] && [ -n "$last_ssid" ]; then
+  elif [ -z "$CUR_SSID" ] && [ -n "$last_ssid" ]; then
     echo "wifi|disconnect|$last_ssid" >> "$MODDIR/work.events"
   fi
-  if [ "$WIFI_UP" -eq 1 ] && [ "$last_up" = "0" ]; then
+  if [ "$WIFI_UP" -eq 1 ] && [ "$last_up" = "0" ] && [ -n "$CUR_SSID" ]; then
     echo "wifi|connect|$CUR_SSID" >> "$MODDIR/work.events"
   fi
   if [ "$WIFI_UP" -eq 0 ] && [ "$last_up" = "1" ]; then
@@ -279,11 +305,13 @@ save_net() {
 }
 
 eval_rules() {
+  # 对照 box_for_magisk：每个盘只算出一个 desired（挂或卸），再执行。
+  # 只有「挂载」规则能决定该挂；卸载规则不再对同一盘投票，也不再 hold 保盘。
   to_mount=$MODDIR/work.mount
   to_unmount=$MODDIR/work.unmount
-  to_keep=$MODDIR/work.keep
-  rm -f "$to_mount" "$to_unmount" "$to_keep"
-  touch "$to_mount" "$to_unmount" "$to_keep"
+  to_seen=$MODDIR/work.seen
+  rm -f "$to_mount" "$to_unmount" "$to_seen" "$MODDIR/work.hold"
+  touch "$to_mount" "$to_unmount" "$to_seen"
 
   wifi_mon=$(kv "$STATE" wifi_monitor)
   [ -n "$wifi_mon" ] || wifi_mon=1
@@ -304,59 +332,33 @@ eval_rules() {
     [ -n "$action" ] || action=mount
     ids=$(kv "$rf" profiles)
     [ -n "$ids" ] || continue
+    rid=$(kv "$rf" id)
+    [ -n "$rid" ] || rid=$(basename "$rf" .conf)
     ssid=$(kv "$rf" ssid)
     trigger=$(kv "$rf" trigger)
     [ -n "$trigger" ] || trigger=connect
     vpn_name=$(kv "$rf" vpn_name)
     vpn_trigger=$(kv "$rf" vpn_trigger)
     [ -n "$vpn_trigger" ] || vpn_trigger=connect
-    trigger_source=$(kv "$rf" trigger_source)
-    [ -n "$trigger_source" ] || trigger_source=vpn
 
-    wifi_v=$(wifi_clause "$trigger" "$ssid")
-    wifi_a=${wifi_v%|*}
-    wifi_k=${wifi_v#*|}
-    vpn_v=$(vpn_clause "$vpn_trigger" "$vpn_name")
-    vpn_a=${vpn_v%|*}
+    wifi_v=$(wifi_clause "$trigger" "$ssid" | tr -d '\r')
+    wifi_a=$(printf '%s' "$wifi_v" | cut -d'|' -f1)
+    vpn_v=$(vpn_clause "$vpn_trigger" "$vpn_name" | tr -d '\r')
+    vpn_a=$(printf '%s' "$vpn_v" | cut -d'|' -f1)
+    [ "$wifi_a" = "1" ] || wifi_a=0
+    [ "$vpn_a" = "1" ] || vpn_a=0
 
     kind_l=$(lower "$kind")
-    keep_combo=0
+    holds=0
     if [ "$kind_l" = "vpn" ]; then
-      active=$vpn_a
-      known=1
+      [ "$vpn_a" = "1" ] && holds=1
     elif [ "$kind_l" = "both" ]; then
-      # 前提已成立 + 触发器发生变化，定时核对本身不触发
-      src=$(lower "$trigger_source")
-      if [ "$src" = "wifi" ]; then
-        guard_a=$vpn_a
-        guard_k=1
-        edge_a=$wifi_a
-        edge_change=$(lower "$trigger")
-        edge_target=$ssid
-      else
-        guard_a=$wifi_a
-        guard_k=$wifi_k
-        edge_a=$vpn_a
-        edge_change=$(lower "$vpn_trigger")
-        edge_target=$vpn_name
-      fi
-      active=0
-      known=0
-      if [ "$guard_a" -eq 1 ] && [ "$guard_k" -eq 1 ] && [ "$edge_a" -eq 1 ] &&
-        event_hit "$src" "$edge_change" "$edge_target"; then
-        active=1
-        known=1
-      fi
-      # 组合只在触发器边沿执行；tun 还在时不能让「WiFi 已断开就卸」拆盘
-      if [ "$action" = "mount" ] && [ -n "$CUR_VPN" ] &&
-        [ "$guard_a" -eq 1 ] && [ "$guard_k" -eq 1 ] &&
-        [ "$(lower "$vpn_trigger")" = "connect" ] && [ "$vpn_a" -eq 1 ]; then
-        keep_combo=1
-      fi
+      [ "$wifi_a" = "1" ] && [ "$vpn_a" = "1" ] && holds=1
     else
-      active=$wifi_a
-      known=$wifi_k
+      [ "$wifi_a" = "1" ] && holds=1
     fi
+
+    log "规则 $rid $kind_l $action wifi=$wifi_a vpn=$vpn_a holds=$holds ssid=$(token_kind "$ssid") vpn_name=$(token_kind "$vpn_name")"
 
     oldifs=$IFS
     IFS=,
@@ -364,20 +366,51 @@ eval_rules() {
       IFS=$oldifs
       pid=$(printf '%s' "$pid" | tr -d ' ')
       [ -n "$pid" ] || continue
-      if [ "$active" -eq 1 ]; then
-        if [ "$action" = "unmount" ]; then
-          echo "$pid" >> "$to_unmount"
-        else
-          echo "$pid" >> "$to_mount"
-        fi
-      elif [ "$kind_l" != "both" ] && [ "$action" != "unmount" ] && [ "$known" -eq 1 ]; then
-        echo "$pid" >> "$to_unmount"
-      fi
-      if [ "$kind_l" = "both" ] && [ "${keep_combo:-0}" -eq 1 ]; then
-        echo "$pid" >> "$to_keep"
+      echo "$pid" >> "$to_seen"
+      if [ "$action" = "mount" ] && [ "$holds" = "1" ]; then
+        echo "$pid" >> "$to_mount"
+        log "要挂 $rid $kind_l"
       fi
     done
     IFS=$oldifs
+  done
+
+  if [ "$WIFI_UP" = "0" ]; then
+    vpn_mount_ok=0
+    for rf in "$EXPORT/rules"/*.conf; do
+      [ -f "$rf" ] || continue
+      [ "$(kv "$rf" enabled)" = "0" ] && continue
+      [ "$(kv "$rf" action)" = "unmount" ] && continue
+      kind_l=$(lower "$(kv "$rf" kind)")
+      [ "$kind_l" = "wifi" ] && continue
+      vt=$(kv "$rf" vpn_trigger)
+      [ -n "$vt" ] || vt=connect
+      [ "$(lower "$vt")" = "connect" ] || continue
+      vn=$(kv "$rf" vpn_name)
+      [ "$kind_l" = "vpn" ] && [ -z "$vn" ] && vn=$(kv "$rf" ssid)
+      [ "$(token_kind "$vn")" = "any" ] && continue
+      vv=$(vpn_clause connect "$vn" | tr -d '\r')
+      va=$(printf '%s' "$vv" | cut -d'|' -f1)
+      [ "$va" = "1" ] || continue
+      if [ "$kind_l" = "both" ]; then
+        wvv=$(wifi_clause "$(kv "$rf" trigger)" "$(kv "$rf" ssid)" | tr -d '\r')
+        wa=$(printf '%s' "$wvv" | cut -d'|' -f1)
+        [ "$wa" = "1" ] || continue
+      fi
+      vpn_mount_ok=1
+      break
+    done
+    if [ "$vpn_mount_ok" = "0" ]; then
+      : > "$to_mount"
+      log "没有 WiFi，当前 VPN 不匹配具名挂载规则，不挂"
+    fi
+  fi
+
+  for pid in $(uniq_file "$to_seen"); do
+    if echo "$(uniq_file "$to_mount")" | grep -qxF "$pid"; then
+      continue
+    fi
+    echo "$pid" >> "$to_unmount"
   done
 }
 
@@ -385,12 +418,6 @@ apply_desired() {
   eval_rules
   to_mount=$MODDIR/work.mount
   to_unmount=$MODDIR/work.unmount
-  # 没 WiFi 也没 VPN 时，不能让错误的「要挂载」挡住卸载
-  if [ "$WIFI_UP" -eq 0 ] && [ -z "$CUR_VPN" ]; then
-    : > "$to_mount"
-    : > "$MODDIR/work.keep"
-  fi
-
   for id in $(uniq_file "$to_mount"); do
     del_list_file "$SKIP_UNMOUNT" "$id"
     if in_list_file "$SKIP_MOUNT" "$id"; then
@@ -403,16 +430,7 @@ apply_desired() {
   done
 
   for id in $(uniq_file "$to_unmount"); do
-    keep=0
     if echo "$(uniq_file "$to_mount")" | grep -qxF "$id"; then
-      if [ "$WIFI_UP" -eq 1 ] || [ -n "$CUR_VPN" ]; then
-        keep=1
-      fi
-    fi
-    if echo "$(uniq_file "$MODDIR/work.keep")" | grep -qxF "$id"; then
-      keep=1
-    fi
-    if [ "$keep" -eq 1 ]; then
       continue
     fi
     del_list_file "$SKIP_MOUNT" "$id"
@@ -428,6 +446,7 @@ apply_desired() {
 
 tick() {
   if ! acquire; then
+    log "看门狗锁被占用，本轮跳过"
     return 0
   fi
   trap release EXIT
@@ -450,18 +469,25 @@ tick() {
     CUR_SSID=
   fi
   CUR_VPN=$(vpn_text)
+  log "状态 WIFI_UP=$WIFI_UP ssid_len=${#CUR_SSID} vpn=${CUR_VPN:-无}"
   fp="$CUR_SSID|$WIFI_UP|$CUR_VPN"
   last=$(cat "$MODDIR/last_net" 2>/dev/null || true)
   detect_events
+  had_events=0
   if [ -s "$MODDIR/work.events" ]; then
+    had_events=1
     rm -f "$SKIP_MOUNT" "$SKIP_UNMOUNT"
   fi
   process_cmds
+  # 网络变了时规则说了算，避免 cmd 里残留的 mount 又写回 skip 保盘
+  if [ "$had_events" = "1" ]; then
+    rm -f "$SKIP_MOUNT" "$SKIP_UNMOUNT"
+  fi
   apply_desired
   save_net
   if [ "$fp" != "$last" ]; then
     echo "$fp" > "$MODDIR/last_net"
-    if [ "$WIFI_UP" -eq 1 ] && [ -z "$CUR_SSID" ]; then
+    if [ "$WIFI_UP" = "1" ] && [ -z "$CUR_SSID" ]; then
       wifi_show="已连接但未读到名称"
     elif [ -n "$CUR_SSID" ]; then
       wifi_show=$CUR_SSID

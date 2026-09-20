@@ -33,7 +33,7 @@ rotate_log() {
 kv() {
   # kv FILE KEY
   [ -f "$1" ] || return 0
-  grep -m1 "^$2=" "$1" 2>/dev/null | cut -d= -f2-
+  grep -m1 "^$2=" "$1" 2>/dev/null | cut -d= -f2- | tr -d '\r'
 }
 
 lower() {
@@ -49,48 +49,74 @@ load_paths() {
   fi
 }
 
+wifi_cmd_status() {
+  cmd wifi status 2>/dev/null
+}
+
+# AOSP：只有这一行表示 supplicant 已 COMPLETED，比 iw/MLO 稳
+wifi_connected_line() {
+  wifi_cmd_status | sed -n 's/^Wifi is connected to "\(.*\)"$/\1/p' | head -n 1
+}
+
+ssid_usable() {
+  case "$1" in
+    ""|"<unknown ssid>"|"<none>"|"0x"|"unknown"|"null") return 1 ;;
+  esac
+  return 0
+}
+
 current_ssid() {
-  for dev in wlan0 wlan1 wifi0; do
-    [ -d /sys/class/net/$dev ] || continue
-    ssid=$(iw dev "$dev" link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
-    [ -z "$ssid" ] && ssid=$(iw "$dev" link 2>/dev/null | sed -n 's/^[[:space:]]*SSID: //p' | head -n 1)
-    if [ -n "$ssid" ]; then
-      printf '%s' "$ssid"
-      return 0
-    fi
-  done
-  # 与 box_for_magisk 相同：cmd wifi status 里的 SSID: "..."
-  ssid=$(cmd wifi status 2>/dev/null | sed -n 's/.*SSID: "\([^"]*\)".*/\1/p' | head -n 1)
-  if [ -n "$ssid" ] && [ "$ssid" != "<unknown ssid>" ]; then
+  ssid=$(wifi_connected_line)
+  if ssid_usable "$ssid"; then
     printf '%s' "$ssid"
     return 0
   fi
   return 1
 }
 
-wifi_associated() {
-  for dev in wlan0 wlan1 wifi0; do
-    [ -d /sys/class/net/$dev ] || continue
-    if iw dev "$dev" link 2>/dev/null | grep -q '^Connected'; then
-      return 0
-    fi
-    if iw "$dev" link 2>/dev/null | grep -q '^Connected'; then
+wifi_radio_on() {
+  ! wifi_cmd_status | grep -q '^Wifi is disabled'
+}
+
+wifi_iface_up() {
+  for d in wlan0 wlan1 wifi0; do
+    [ -d /sys/class/net/$d ] || continue
+    st=$(cat /sys/class/net/$d/operstate 2>/dev/null || true)
+    [ "$st" = "up" ] && return 0
+  done
+  return 1
+}
+
+wifi_has_ip() {
+  # box_for_magisk：wlan 上要有 IPv4 才算连上，避免开关瞬间的假连接
+  for d in wlan0 wlan1 wifi0; do
+    [ -d /sys/class/net/$d ] || continue
+    if ip -4 addr show "$d" 2>/dev/null | grep -q 'inet '; then
       return 0
     fi
   done
   return 1
 }
 
+wifi_associated() {
+  wifi_radio_on || return 1
+  wifi_iface_up || return 1
+  wifi_has_ip || return 1
+  ssid=$(wifi_connected_line)
+  ssid_usable "$ssid"
+}
+
 vpn_ifaces() {
   # tunl0 是内核 IPIP，不是 VpnService
   if [ -d /sys/class/net ]; then
-    ls /sys/class/net | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+$|^tailscale[0-9]*$' 2>/dev/null
+    ls /sys/class/net | grep -E '^(tun|tap|wg|ppp|utun)[0-9]+$|^tailscale[0-9]+$' 2>/dev/null
   fi
 }
 
 is_generic_vpn_iface() {
   case "$1" in
-    tun[0-9]*|tap[0-9]*|wg[0-9]*|ppp[0-9]*|utun[0-9]*|tailscale*) return 0 ;;
+    tun[0-9]*|tap[0-9]*|wg[0-9]*|ppp[0-9]*|utun[0-9]*) return 0 ;;
+    tailscale[0-9]*) [ "$1" != "tailscale" ] && return 0 ;;
   esac
   return 1
 }
@@ -156,19 +182,48 @@ vpn_text() {
   fi
 }
 
-match_token() {
-  # match_token NEEDLE ITEM
+is_any_token() {
+  t=$(lower "$1")
+  [ "$t" = "*" ] || [ "$t" = "any" ]
+}
+
+token_kind() {
+  t=$(lower "$1")
+  if [ -z "$t" ]; then
+    printf '%s' empty
+  elif is_any_token "$t"; then
+    printf '%s' any
+  else
+    printf '%s' named
+  fi
+}
+
+match_ssid() {
   need=$(lower "$1")
   item=$(lower "$2")
-  [ -z "$need" ] && return 0
-  [ "$need" = "*" ] && return 0
-  [ "$need" = "any" ] && return 0
-  [ "$need" = "vpn" ] && return 0
+  is_any_token "$need" && return 0
+  [ -z "$need" ] && return 1
+  [ -z "$item" ] && return 1
+  [ "$need" = "$item" ]
+}
+
+match_vpn() {
+  need=$(lower "$1")
+  item=$(lower "$2")
+  is_any_token "$need" && return 0
+  [ -z "$need" ] && return 1
   [ -z "$item" ] && return 1
   [ "$need" = "$item" ] && return 0
+  if is_generic_vpn_iface "$need"; then
+    return 1
+  fi
+  # 只允许「当前值包含规则片段」，禁止反向（避免 tun0 命中整段摘要）
   case "$item" in *"$need"*) return 0 ;; esac
-  case "$need" in *"$item"*) return 0 ;; esac
   return 1
+}
+
+match_token() {
+  match_vpn "$1" "$2"
 }
 
 in_init_ns() {
@@ -191,7 +246,7 @@ wifi_clause() {
   ssid=$CUR_SSID
   any=0
   t=$(lower "$target")
-  if [ -z "$t" ] || [ "$t" = "*" ] || [ "$t" = "any" ]; then
+  if is_any_token "$t"; then
     any=1
   fi
   if [ "$any" -eq 1 ]; then
@@ -203,7 +258,7 @@ wifi_clause() {
     known=1
   else
     matched=0
-    if [ -n "$ssid" ] && match_token "$target" "$ssid"; then
+    if [ -n "$ssid" ] && match_ssid "$target" "$ssid"; then
       matched=1
     fi
     if [ "$WIFI_UP" -eq 0 ]; then
@@ -234,12 +289,14 @@ vpn_clause() {
     matched=0
   else
     t=$(lower "$target")
-    if [ -z "$t" ] || [ "$t" = "*" ] || [ "$t" = "any" ] || [ "$t" = "vpn" ]; then
+    if is_any_token "$t"; then
       matched=1
+    elif [ -z "$t" ]; then
+      matched=0
     else
       while IFS= read -r n; do
         [ -n "$n" ] || continue
-        if match_token "$target" "$n"; then
+        if match_vpn "$target" "$n"; then
           matched=1
           break
         fi

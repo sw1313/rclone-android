@@ -69,7 +69,7 @@ class WifiRulesScreen extends ConsumerWidget {
           const ListTile(
             dense: true,
             leading: Icon(Icons.info_outline),
-            title: Text('单条件按当前状态判断。组合规则是「前提已成立时，触发器发生变化才执行」。VPN 按应用包名区分，磁贴开关也算；请填应用名或包名，不要填 tun0。模块看门狗会侦测这些变化，不依赖 App 活着。'),
+            title: Text('规则按当前状态判断：指定 WiFi 或指定 VPN 连着才挂，组合条件两边都要成立。WiFi 须整名匹配；VPN 填应用名或包名。不要填 tun0，也不要填 *。'),
           ),
           const Divider(height: 1),
           Expanded(
