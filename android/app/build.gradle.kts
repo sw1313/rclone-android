@@ -28,7 +28,10 @@ android {
 
     packaging {
         jniLibs {
+            // 从 native 目录执行 rclone / fusermount，必须解压出来
             useLegacyPackaging = true
+            // debug 校验层不是业务 so，Android 16 的 16KB 检查会对它报未知错误
+            excludes += "**/libVkLayer_khronos_validation.so"
         }
     }
 

@@ -59,6 +59,9 @@ foreach ($job in $Jobs) {
     $fuseOut = Join-Path $dir "libfusermount.so"
     Get-File $job.FuseUrl $fuseOut
     Write-Host "Wrote $fuseOut"
+
+    $align = Join-Path $PSScriptRoot "align_elf_16k.py"
+    python $align $rcloneOut $fuseOut
 }
 
 Set-Content -Path (Join-Path $Jni "VERSION") -Value "rclone $RcloneVersion android-21"
