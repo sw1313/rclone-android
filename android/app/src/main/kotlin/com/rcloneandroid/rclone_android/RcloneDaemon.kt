@@ -62,6 +62,7 @@ object RcloneDaemon {
         }
         stopStale(paths)
         val log = File(paths.logsDir, "rcd.log")
+        log.writeText("")
         val builder = ProcessBuilder(
             paths.rcloneBin.absolutePath,
             "rcd",
@@ -88,8 +89,13 @@ object RcloneDaemon {
         }
         val ok = waitForPort(12_000)
         if (!ok) {
-            val tail = if (log.exists()) log.readText().takeLast(800) else ""
-            throw IllegalStateException("rclone rcd 启动超时 $tail")
+            val tail = if (log.exists()) log.readText().trim().takeLast(500) else ""
+            val reason = if (tail.contains("panic:", ignoreCase = true)) {
+                "rclone 进程异常退出"
+            } else {
+                "rclone rcd 启动超时"
+            }
+            throw IllegalStateException("$reason ${tail.ifBlank { "" }}".trim())
         }
         EventHub.log("info", "rclone rcd 已启动 $url")
         EventHub.emit(mapOf("type" to "daemon", "running" to true))

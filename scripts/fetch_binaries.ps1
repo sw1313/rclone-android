@@ -1,6 +1,8 @@
 # Downloads official rclone Android 21 binaries and fusermount helpers
 # into android/app/src/main/jniLibs/<abi>/ as librclone.so / libfusermount.so.
 # Android 10+ cannot execute files copied into the app data directory.
+# Do not rewrite those ELF files (16KB padding etc.): rclone is a Go binary
+# and post-processing it makes `rclone rcd` panic in go-spew.
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
@@ -59,9 +61,6 @@ foreach ($job in $Jobs) {
     $fuseOut = Join-Path $dir "libfusermount.so"
     Get-File $job.FuseUrl $fuseOut
     Write-Host "Wrote $fuseOut"
-
-    $align = Join-Path $PSScriptRoot "align_elf_16k.py"
-    python $align $rcloneOut $fuseOut
 }
 
 Set-Content -Path (Join-Path $Jni "VERSION") -Value "rclone $RcloneVersion android-21"
