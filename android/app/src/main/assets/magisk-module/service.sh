@@ -3,6 +3,8 @@
 PKG=com.rcloneandroid.rclone_android
 SVC=$PKG/.RcloneService
 MODDIR=${0%/*}
+# shellcheck source=/dev/null
+. "$MODDIR/common.sh"
 SETTINGS=/data/user/0/$PKG/files/settings.json
 BOOTPREF=/data/user_de/0/$PKG/files/boot_prefs.json
 
@@ -52,7 +54,7 @@ fi
 
 n=0
 while [ $n -lt 90 ]; do
-  if [ -d /sdcard/Android ]; then
+  if [ "$(getprop sys.boot_completed)" = "1" ] || [ -d /sdcard/Android ]; then
     break
   fi
   n=$((n + 1))
@@ -84,6 +86,27 @@ fi
 if [ "$off" -eq 1 ]; then
   exit 0
 fi
+
+# 优先等用户解锁；若模块里已有配置快照，不必干等到 CE，先挂上
+n=0
+while [ $n -lt 180 ]; do
+  if ce_ready; then
+    break
+  fi
+  case "$(getprop sys.user.0.ce_available)" in
+    1|true)
+      if ce_ready; then
+        break
+      fi
+      ;;
+  esac
+  if snapshot_ready && [ $n -ge 10 ]; then
+    log "用户数据未解锁，先用模块快照启动"
+    break
+  fi
+  n=$((n + 1))
+  sleep 2
+done
 
 kick
 sleep 8

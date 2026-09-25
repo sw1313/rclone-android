@@ -102,10 +102,11 @@ do_mount() {
   local_path=$(kv "$conf" local)
   fuse=$FUSE_ROOT/$id
   rel=$(relative_emulated "$local_path")
-  cache=$(kv "$STATE" files_dir)
+  cache=$(mount_cache_dir)
   [ -n "$cache" ] || cache=$FILES
   vfs=$cache/vfs
-  cfg=$cache/rclone.conf
+  cfg=$(mount_rclone_conf)
+  [ -n "$cfg" ] || cfg=$cache/rclone.conf
   logf=$cache/logs/mount-$id.log
   mkdir -p "$fuse" "$local_path" "$vfs" "$cache/logs" "$HELPER"
 
@@ -195,6 +196,31 @@ do_mount() {
   in_init_ns mount -o bind "$fuse" "$local_path" 2>/dev/null || true
   log "已挂载 $name -> $local_path"
   notify_app
+}
+
+ensure_binds() {
+  id=$1
+  conf=$EXPORT/profiles/$id.conf
+  [ -f "$conf" ] || return 0
+  is_fuse_mounted "$id" || return 1
+  fuse=$FUSE_ROOT/$id
+  local_path=$(kv "$conf" local)
+  rel=$(relative_emulated "$local_path")
+  if [ -n "$rel" ]; then
+    for view in write read default; do
+      dest=/mnt/runtime/$view/emulated/0/$rel
+      if ! in_init_ns grep -Fq " $dest " /proc/mounts 2>/dev/null; then
+        in_init_ns mkdir -p "$dest"
+        in_init_ns mount -o bind "$fuse" "$dest" 2>/dev/null || true
+      fi
+    done
+  fi
+  if [ -n "$local_path" ]; then
+    if ! in_init_ns grep -Fq " $local_path " /proc/mounts 2>/dev/null; then
+      in_init_ns mkdir -p "$local_path"
+      in_init_ns mount -o bind "$fuse" "$local_path" 2>/dev/null || true
+    fi
+  fi
 }
 
 process_cmds() {
@@ -320,7 +346,10 @@ eval_rules() {
   if [ "$wifi_mon" = "0" ] || [ "$prefer" = "0" ]; then
     return 0
   fi
-  [ -d "$EXPORT/rules" ] || return 0
+  if [ ! -d "$EXPORT/rules" ] || ! ls "$EXPORT/rules"/*.conf >/dev/null 2>&1; then
+    log "规则目录还不可读，本轮跳过"
+    return 0
+  fi
 
   for rf in "$EXPORT/rules"/*.conf; do
     [ -f "$rf" ] || continue
@@ -426,6 +455,8 @@ apply_desired() {
     fi
     if ! is_fuse_mounted "$id"; then
       do_mount "$id" || true
+    else
+      ensure_binds "$id" || true
     fi
   done
 
@@ -451,6 +482,21 @@ tick() {
   fi
   trap release EXIT
   load_paths
+  if ! resolve_config; then
+    if wifi_associated; then
+      WIFI_UP=1
+      CUR_SSID=$(current_ssid)
+    else
+      WIFI_UP=0
+      CUR_SSID=
+    fi
+    CUR_VPN=$(vpn_text)
+    log "状态 WIFI_UP=$WIFI_UP ssid_len=${#CUR_SSID} vpn=${CUR_VPN:-无} cfg=none"
+    log "规则还不可读，本轮跳过（未解锁且没有快照）"
+    release
+    trap - EXIT
+    return 0
+  fi
   if [ ! -d "/data/user/0/$PKG" ]; then
     if ! pm path "$PKG" >/dev/null 2>&1; then
       log "应用已卸载，停止看门狗并删除模块"
@@ -469,7 +515,7 @@ tick() {
     CUR_SSID=
   fi
   CUR_VPN=$(vpn_text)
-  log "状态 WIFI_UP=$WIFI_UP ssid_len=${#CUR_SSID} vpn=${CUR_VPN:-无}"
+  log "状态 WIFI_UP=$WIFI_UP ssid_len=${#CUR_SSID} vpn=${CUR_VPN:-无} cfg=${CONFIG_SRC:-ce}"
   fp="$CUR_SSID|$WIFI_UP|$CUR_VPN"
   last=$(cat "$MODDIR/last_net" 2>/dev/null || true)
   detect_events
@@ -502,8 +548,61 @@ tick() {
   trap - EXIT
 }
 
+mounts_pending() {
+  [ -s "$MODDIR/work.mount" ] || return 1
+  for id in $(uniq_file "$MODDIR/work.mount"); do
+    is_fuse_mounted "$id" || return 0
+  done
+  return 1
+}
+
+boot_followup() {
+  n=0
+  while [ $n -lt 180 ]; do
+    load_paths
+    if ce_ready || snapshot_ready; then
+      log "配置已就绪，开机核对"
+      break
+    fi
+    n=$((n + 1))
+    sleep 5
+  done
+  # 收工看的是「WiFi 和 VPN 都已经读清，并且规则该挂的已经挂上」。
+  # 数据网、WiFi 关闭、没有 VPN，都是明确结果，不会干等 WiFi。
+  # Tailscale 这类规则同样参与：VPN 已连上就按规则挂；明确没连就结束。
+  # 只有一边还在起来（关联中 / 有网卡但不知道是谁），或该挂还没挂上，才再试。
+  last=
+  i=0
+  while [ $i -lt 8 ]; do
+    sh "$MODDIR/watchdog.sh" tick
+    wifi=$(wifi_link_state)
+    vpn=$(vpn_link_state)
+    if mounts_pending; then
+      last=
+      log "该挂的盘还没挂上，继续核对 wifi=$wifi vpn=$vpn"
+    elif [ "$wifi" = "starting" ] || [ "$vpn" = "starting" ]; then
+      last=
+      log "网络还没读清，继续核对 wifi=$wifi vpn=$vpn"
+    else
+      pair="$wifi|$vpn"
+      if [ "$pair" = "$last" ]; then
+        log "开机核对完成 wifi=$wifi vpn=$vpn"
+        return 0
+      fi
+      last=$pair
+      log "再确认一次 wifi=$wifi vpn=$vpn"
+    fi
+    i=$((i + 1))
+    sleep 5
+  done
+  log "开机核对结束，之后只等网络变化"
+}
+
 loop() {
   echo $$ > "$MODDIR/watchdog.pid"
+  # 开机会话：上一轮的 skip / last_* 会挡住同 SSID 补挂
+  rm -f "$SKIP_MOUNT" "$SKIP_UNMOUNT" \
+    "$MODDIR/last_ssid" "$MODDIR/last_vpn" "$MODDIR/last_wifi_up" "$MODDIR/last_net"
   log "看门狗已启动 pid=$$"
   n=0
   while [ ! -e /data/misc/net ] && [ $n -lt 60 ]; do
@@ -511,6 +610,8 @@ loop() {
     sleep 1
   done
   tick
+  # 解锁前第一次 tick 可能没有规则；WiFi 早已连上时 inotify 也不会再响
+  ( boot_followup ) &
   INOTIFYD=/system/bin/inotifyd
   [ -x "$INOTIFYD" ] || INOTIFYD=$(command -v inotifyd 2>/dev/null || true)
   if [ -z "$INOTIFYD" ] || [ ! -x "$INOTIFYD" ]; then
@@ -537,6 +638,7 @@ loop() {
 case "${1:-tick}" in
   loop) loop ;;
   tick) tick ;;
+  boot_followup) boot_followup ;;
   mount) echo "mount $2" >> "$CMD_FILE"; tick ;;
   unmount) echo "unmount $2" >> "$CMD_FILE"; tick ;;
   *) tick ;;

@@ -150,6 +150,26 @@ object ModuleRuntime {
             line(text, "profiles", joined)
             File(ruleDir, "$id.conf").writeText(text.toString())
         }
+        snapshotToModule(paths)
+    }
+
+    private fun snapshotToModule(paths: AppPaths) {
+        if (!RootShell.isAvailable() || !BootHook.isInstalled()) return
+        val src = RootShell.shQuote(paths.filesDir.absolutePath)
+        val dest = "$MOD_DIR/export"
+        RootShell.exec(
+            "mkdir -p $dest/rules $dest/profiles && " +
+                "cp -f $src/module/state.conf $dest/state.conf && " +
+                "cp -f $src/rclone.conf $dest/rclone.conf && " +
+                "rm -f $dest/rules/*.conf $dest/profiles/*.conf && " +
+                "cp -f $src/module/rules/*.conf $dest/rules/ && " +
+                "cp -f $src/module/profiles/*.conf $dest/profiles/ && " +
+                "if [ -f $src/module/vpn_aliases ]; then cp -f $src/module/vpn_aliases $dest/vpn_aliases; fi && " +
+                "chmod 700 $dest $dest/rules $dest/profiles && " +
+                "chmod 600 $dest/rclone.conf $dest/state.conf && " +
+                "chmod 600 $dest/rules/*.conf $dest/profiles/*.conf 2>/dev/null || true",
+            log = false,
+        )
     }
 
     private fun writeVpnAliases(exportDir: File, context: Context) {

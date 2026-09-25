@@ -11,6 +11,8 @@ SKIP_MOUNT=$MODDIR/skip_mount
 SKIP_UNMOUNT=$MODDIR/skip_unmount
 HELPER=/data/local/tmp/rclone-android
 FUSE_ROOT=/mnt/rclone
+SNAPSHOT=$MODDIR/export
+CONFIG_SRC=
 
 log() {
   ts=$(date '+%H:%M:%S' 2>/dev/null || echo --)
@@ -47,6 +49,87 @@ load_paths() {
     EXPORT=$FILES/module
     STATE=$EXPORT/state.conf
   fi
+}
+
+# 开机后 CE 存储要等用户解锁才可读。解锁前规则和 rclone.conf 都不在。
+ce_ready() {
+  load_paths
+  [ -f "$STATE" ] || return 1
+  [ -f "$FILES/rclone.conf" ] || return 1
+  ls "$EXPORT/rules"/*.conf >/dev/null 2>&1 || return 1
+}
+
+snapshot_ready() {
+  [ -f "$SNAPSHOT/state.conf" ] || return 1
+  [ -f "$SNAPSHOT/rclone.conf" ] || return 1
+  ls "$SNAPSHOT/rules"/*.conf >/dev/null 2>&1 || return 1
+}
+
+sync_snapshot() {
+  [ -f "$STATE" ] || return 1
+  [ -f "$FILES/rclone.conf" ] || return 1
+  ls "$EXPORT/rules"/*.conf >/dev/null 2>&1 || return 1
+  mkdir -p "$SNAPSHOT/rules" "$SNAPSHOT/profiles"
+  cp -f "$STATE" "$SNAPSHOT/state.conf" 2>/dev/null || return 1
+  cp -f "$FILES/rclone.conf" "$SNAPSHOT/rclone.conf" 2>/dev/null || return 1
+  rm -f "$SNAPSHOT/rules/"*.conf "$SNAPSHOT/profiles/"*.conf 2>/dev/null
+  cp -f "$EXPORT/rules/"*.conf "$SNAPSHOT/rules/" 2>/dev/null || true
+  cp -f "$EXPORT/profiles/"*.conf "$SNAPSHOT/profiles/" 2>/dev/null || true
+  if [ -f "$EXPORT/vpn_aliases" ]; then
+    cp -f "$EXPORT/vpn_aliases" "$SNAPSHOT/vpn_aliases" 2>/dev/null || true
+  fi
+  chmod 700 "$SNAPSHOT" "$SNAPSHOT/rules" "$SNAPSHOT/profiles" 2>/dev/null || true
+  chmod 600 "$SNAPSHOT/rclone.conf" "$SNAPSHOT/state.conf" 2>/dev/null || true
+  chmod 600 "$SNAPSHOT/rules/"*.conf "$SNAPSHOT/profiles/"*.conf 2>/dev/null || true
+}
+
+# 解锁前用 /data/adb 里的快照；解锁后改回应用目录并刷新快照。
+resolve_config() {
+  load_paths
+  if ce_ready; then
+    CONFIG_SRC=ce
+    sync_snapshot || true
+    return 0
+  fi
+  if snapshot_ready; then
+    FILES=$MODDIR/cache
+    mkdir -p "$FILES/logs" "$FILES/vfs"
+    EXPORT=$SNAPSHOT
+    STATE=$SNAPSHOT/state.conf
+    CONFIG_SRC=snapshot
+    return 0
+  fi
+  CONFIG_SRC=none
+  return 1
+}
+
+mount_cache_dir() {
+  cache=$(kv "$STATE" files_dir)
+  [ -n "$cache" ] || cache=$FILES
+  if [ -r "$cache/rclone.conf" ]; then
+    printf '%s' "$cache"
+    return 0
+  fi
+  if [ -r "$SNAPSHOT/rclone.conf" ]; then
+    mkdir -p "$MODDIR/cache/vfs" "$MODDIR/cache/logs"
+    printf '%s' "$MODDIR/cache"
+    return 0
+  fi
+  printf '%s' "$cache"
+}
+
+mount_rclone_conf() {
+  cache=$(kv "$STATE" files_dir)
+  [ -n "$cache" ] || cache=$FILES
+  if [ -r "$cache/rclone.conf" ]; then
+    printf '%s' "$cache/rclone.conf"
+    return 0
+  fi
+  if [ -r "$SNAPSHOT/rclone.conf" ]; then
+    printf '%s' "$SNAPSHOT/rclone.conf"
+    return 0
+  fi
+  printf '%s' "$cache/rclone.conf"
 }
 
 wifi_cmd_status() {
@@ -106,6 +189,23 @@ wifi_associated() {
   ssid_usable "$ssid"
 }
 
+# connected：已关联；disabled：无线关闭；offline：开着但没连上（数据网）；starting：还在关联
+wifi_link_state() {
+  if wifi_associated; then
+    printf '%s' connected
+    return 0
+  fi
+  if ! wifi_radio_on; then
+    printf '%s' disabled
+    return 0
+  fi
+  if wifi_cmd_status | grep -q '^Wifi is not connected'; then
+    printf '%s' offline
+    return 0
+  fi
+  printf '%s' starting
+}
+
 vpn_ifaces() {
   # tunl0 是内核 IPIP，不是 VpnService
   if [ -d /sys/class/net ]; then
@@ -136,6 +236,26 @@ vpn_dump_pkg() {
   fi
   [ -n "$pkg" ] || [ -n "$iface" ] || return 0
   printf '%s\t%s\n' "$pkg" "$iface"
+}
+
+# up：dumpsys 已给出包名；down：明确没有 VpnService；starting：有网卡但还不知道是谁
+vpn_link_state() {
+  dump=$(dumpsys vpn_management 2>/dev/null) || true
+  if [ -z "$dump" ]; then
+    printf '%s' starting
+    return 0
+  fi
+  rec=$(vpn_dump_pkg)
+  if [ -z "$rec" ]; then
+    printf '%s' down
+    return 0
+  fi
+  pkg=$(printf '%s' "$rec" | cut -f1)
+  if [ -n "$pkg" ]; then
+    printf '%s' up
+    return 0
+  fi
+  printf '%s' starting
 }
 
 vpn_alias_names() {

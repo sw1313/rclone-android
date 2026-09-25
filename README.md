@@ -6,7 +6,7 @@
 
 ## 安装
 
-到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.11**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
+到 [Releases](https://github.com/sw1313/rclone-android/releases/latest) 下载 APK。当前版本 **v1.0.12**，通用包含 arm64 / armeabi-v7a / x86_64，体积较大。覆盖安装即可，不必卸载。
 
 需要：
 
@@ -66,6 +66,7 @@ rclone 与 fusermount 体积较大，默认不进 Git。构建前必须先跑下
 
 - App 在时：用系统 `NetworkCallback` 收 WiFi / VPN 变化，再通知模块执行
 - App 被冻或被杀时：模块用 `inotifyd` 监听 `/data/misc/net`（路由表变化），例如开关 WiFi、用磁贴打开 Tailscale
+- 规则和 `rclone.conf` 会同步一份到模块目录（设备加密分区，解锁前也能读）。开机同时读清 WiFi 和 VPN 再按规则核对：家里 WiFi 连上就挂；在外面用数据网时，WiFi 没连上且 Tailscale 已连上也会挂；两边都明确没连上就结束。只有某一边还在起来，或该挂还没挂上，才会再试一小会儿，之后交给网络变化监听
 - 规则按当前状态执行：指定 WiFi 还连着但挂载进程没了，会补挂；指定 WiFi 已断开且当前 VPN 对不上挂载规则，会卸掉
 - 本应用不再常驻前台服务。通知栏常驻显示已挂载或尚未挂载；文件传输才短暂拉起 `dataSync` 进度通知，传完即停
 
